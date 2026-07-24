@@ -37,13 +37,14 @@ type PackageSummary struct {
 }
 
 type PackageMetadata struct {
-	Org         string   `json:"org"`
-	Name        string   `json:"name"`
-	Description *string  `json:"description,omitempty"`
-	Vcs         string   `json:"vcs"`
-	RepoURL     string   `json:"repo_url"`
-	Latest      *string  `json:"latest,omitempty"`
-	Versions    []string `json:"versions"`
+	Org           string   `json:"org"`
+	Name          string   `json:"name"`
+	Description   *string  `json:"description,omitempty"`
+	Vcs           string   `json:"vcs"`
+	RepoURL       string   `json:"repo_url"`
+	Latest        *string  `json:"latest,omitempty"`
+	Versions      []string `json:"versions"`
+	VersionScheme string   `json:"version_scheme,omitempty"`
 }
 
 type VersionMetadata struct {
@@ -78,15 +79,15 @@ type PublishResponse struct {
 }
 
 func PackagePath(org, name string) string {
-	return fmt.Sprintf("/v1/packages/%s/%s", org, name)
+	return fmt.Sprintf("/v1/packages/%s/%s", url.PathEscape(org), url.PathEscape(name))
 }
 
 func VersionPath(org, name, version string) string {
-	return fmt.Sprintf("/v1/packages/%s/%s/versions/%s", org, name, version)
+	return fmt.Sprintf("/v1/packages/%s/%s/versions/%s", url.PathEscape(org), url.PathEscape(name), url.PathEscape(version))
 }
 
 func ArtifactPath(sha256 string) string {
-	return "/v1/artifacts/" + sha256
+	return "/v1/artifacts/" + url.PathEscape(sha256)
 }
 
 type Client struct {
@@ -120,14 +121,21 @@ func (c *Client) do(method, path string, body io.Reader, contentType string, out
 		return err
 	}
 	if resp.StatusCode >= 400 {
-		apiErr := &APIError{Status: resp.StatusCode, Code: "unknown", Message: string(payload)}
-		_ = json.Unmarshal(payload, apiErr)
-		return apiErr
+		return newAPIError(resp.StatusCode, payload)
 	}
 	if out != nil {
 		return json.Unmarshal(payload, out)
 	}
 	return nil
+}
+
+// newAPIError builds the typed error from an error-response body, keeping the
+// "unknown" code when the body is not ApiError JSON.
+func newAPIError(status int, payload []byte) *APIError {
+	apiErr := &APIError{Status: status, Code: "unknown", Message: string(payload)}
+	_ = json.Unmarshal(payload, apiErr)
+	apiErr.Status = status
+	return apiErr
 }
 
 func (c *Client) GetPackage(org, name string) (*PackageMetadata, error) {
@@ -170,7 +178,14 @@ func (c *Client) DownloadArtifact(v *VersionMetadata, destPath string) error {
 	if !strings.HasPrefix(target, "http") {
 		target = c.Base + ArtifactPath(v.Sha256)
 	}
-	resp, err := c.HTTP.Get(target)
+	req, err := http.NewRequest(http.MethodGet, target, nil)
+	if err != nil {
+		return err
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
 	}
@@ -178,6 +193,9 @@ func (c *Client) DownloadArtifact(v *VersionMetadata, destPath string) error {
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return newAPIError(resp.StatusCode, payload)
 	}
 	sum := sha256.Sum256(payload)
 	if actual := hex.EncodeToString(sum[:]); actual != v.Sha256 {

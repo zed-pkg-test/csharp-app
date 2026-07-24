@@ -3,6 +3,7 @@
 
 export type Vcs = "git" | "hg" | "jj" | "sapling" | "fossil" | "pijul";
 export type ArtifactFormat = "tar.gz" | "zip";
+export type VersionScheme = "semver" | "calver" | "opaque";
 
 export interface PackageSummary {
   org: string;
@@ -19,6 +20,7 @@ export interface PackageMetadata {
   repo_url: string;
   latest?: string | null;
   versions: string[];
+  version_scheme?: VersionScheme;
 }
 
 export interface VersionMetadata {

@@ -1456,6 +1456,7 @@ name = "zed-client"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "percent-encoding",
  "reqwest",
  "serde_json",
  "sha2",

@@ -27,19 +27,20 @@ export interface ClientOptions {
 }
 
 export function packagePath(org: string, name: string): string {
-  return `/v1/packages/${org}/${name}`;
+  return `/v1/packages/${encodeURIComponent(org)}/${encodeURIComponent(name)}`;
 }
 
 export function versionPath(org: string, name: string, version: string): string {
-  return `/v1/packages/${org}/${name}/versions/${version}`;
+  return `/v1/packages/${encodeURIComponent(org)}/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}`;
 }
 
 export function artifactPath(sha256: string): string {
-  return `/v1/artifacts/${sha256}`;
+  return `/v1/artifacts/${encodeURIComponent(sha256)}`;
 }
 
 export function filePath(org: string, name: string, version: string, path: string): string {
-  return `/v1/files/${org}/${name}/${version}/${path}`;
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  return `/v1/files/${encodeURIComponent(org)}/${encodeURIComponent(name)}/${encodeURIComponent(version)}/${encodedPath}`;
 }
 
 export class ZedClient {
@@ -58,9 +59,15 @@ export class ZedClient {
     if (this.token) headers.set("authorization", `Bearer ${this.token}`);
     const response = await this.fetchImpl(`${this.base}${path}`, { ...init, headers });
     if (!response.ok) {
-      let body: ApiErrorBody = { code: "unknown", message: await response.text() };
+      const text = await response.text();
+      let body: ApiErrorBody = { code: "unknown", message: text };
       try {
-        body = JSON.parse(body.message) as ApiErrorBody;
+        const parsed = JSON.parse(text) as Partial<ApiErrorBody> | null;
+        body = {
+          // JSON error bodies without a stable code still get a defined one.
+          code: typeof parsed?.code === "string" ? parsed.code : `http_${response.status}`,
+          message: typeof parsed?.message === "string" ? parsed.message : text,
+        };
       } catch {
         // non-JSON error body; keep the raw text
       }

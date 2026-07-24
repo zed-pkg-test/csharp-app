@@ -8,10 +8,13 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import dataclass, field, fields
 from typing import Any, Optional
 
 DEFAULT_REGISTRY_URL = "https://registry.zpkg.tech"
+
+USER_AGENT = "zed-client-python/0.1.0"
 
 
 class ZedApiError(Exception):
@@ -24,16 +27,21 @@ class ZedApiError(Exception):
         self.message = message
 
 
+def _quote(segment: str) -> str:
+    """Percent-encode one path segment (everything reserved, including "/")."""
+    return urllib.parse.quote(segment, safe="")
+
+
 def package_path(org: str, name: str) -> str:
-    return f"/v1/packages/{org}/{name}"
+    return f"/v1/packages/{_quote(org)}/{_quote(name)}"
 
 
 def version_path(org: str, name: str, version: str) -> str:
-    return f"/v1/packages/{org}/{name}/versions/{version}"
+    return f"/v1/packages/{_quote(org)}/{_quote(name)}/versions/{_quote(version)}"
 
 
 def artifact_path(sha256: str) -> str:
-    return f"/v1/artifacts/{sha256}"
+    return f"/v1/artifacts/{_quote(sha256)}"
 
 
 @dataclass
@@ -53,6 +61,7 @@ class PackageMetadata:
     versions: list[str] = field(default_factory=list)
     description: Optional[str] = None
     latest: Optional[str] = None
+    version_scheme: str = "semver"
 
 
 @dataclass
@@ -70,6 +79,33 @@ class VersionMetadata:
     vcs_commit: Optional[str] = None
 
 
+@dataclass
+class PublishResponse:
+    org: str
+    name: str
+    version: str
+    sha256: str
+
+
+def _from_wire(cls: type, data: dict) -> Any:
+    """Build dataclass ``cls`` from a wire dict, ignoring unknown server
+    fields so newly added contract fields never crash older clients."""
+    known = {f.name for f in fields(cls)}
+    return cls(**{key: value for key, value in data.items() if key in known})
+
+
+def _api_error(error: urllib.error.HTTPError) -> ZedApiError:
+    """Map an HTTPError to a ZedApiError carrying the registry code."""
+    raw = error.read().decode()
+    try:
+        parsed = json.loads(raw)
+        code = parsed.get("code", "unknown")
+        message = parsed.get("message", raw)
+    except (ValueError, AttributeError):
+        code, message = "unknown", raw
+    return ZedApiError(error.code, code, message)
+
+
 class ZedClient:
     def __init__(
         self,
@@ -79,36 +115,43 @@ class ZedClient:
         self.base = registry_url.rstrip("/")
         self.token = token
 
-    def _request(self, path: str, method: str = "GET", body: Any = None) -> Any:
-        url = f"{self.base}{path}"
-        data = None
-        headers = {"user-agent": "zed-client-python/0.1.0"}
+    def _headers(self) -> dict:
+        headers = {"user-agent": USER_AGENT}
         if self.token:
             headers["authorization"] = f"Bearer {self.token}"
+        return headers
+
+    def _request(
+        self,
+        path: str,
+        method: str = "GET",
+        body: Any = None,
+        data: Optional[bytes] = None,
+        content_type: Optional[str] = None,
+    ) -> Any:
+        url = f"{self.base}{path}"
+        headers = self._headers()
         if body is not None:
             data = json.dumps(body).encode()
             headers["content-type"] = "application/json"
+        elif content_type is not None:
+            headers["content-type"] = content_type
         request = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(request) as response:
                 return json.loads(response.read().decode())
         except urllib.error.HTTPError as error:
-            raw = error.read().decode()
-            try:
-                parsed = json.loads(raw)
-                raise ZedApiError(error.code, parsed.get("code", "unknown"), parsed.get("message", raw)) from None
-            except (ValueError, KeyError):
-                raise ZedApiError(error.code, "unknown", raw) from None
+            raise _api_error(error) from None
 
     def get_package(self, org: str, name: str) -> PackageMetadata:
-        return PackageMetadata(**self._request(package_path(org, name)))
+        return _from_wire(PackageMetadata, self._request(package_path(org, name)))
 
     def get_version(self, org: str, name: str, version: str) -> VersionMetadata:
-        return VersionMetadata(**self._request(version_path(org, name, version)))
+        return _from_wire(VersionMetadata, self._request(version_path(org, name, version)))
 
     def search(self, query: str) -> list[PackageSummary]:
         data = self._request(f"/v1/search?q={urllib.parse.quote(query)}")
-        return [PackageSummary(**item) for item in data.get("items", [])]
+        return [_from_wire(PackageSummary, item) for item in data.get("items", [])]
 
     def claim_org(self, slug: str) -> dict:
         return self._request("/v1/orgs", method="POST", body={"slug": slug})
@@ -118,10 +161,47 @@ class ZedClient:
         url = version.download_url
         if not url.startswith("http"):
             url = f"{self.base}{artifact_path(version.sha256)}"
-        with urllib.request.urlopen(url) as response:
-            payload = response.read()
+        request = urllib.request.Request(url, headers=self._headers())
+        try:
+            with urllib.request.urlopen(request) as response:
+                payload = response.read()
+        except urllib.error.HTTPError as error:
+            raise _api_error(error) from None
         actual = hashlib.sha256(payload).hexdigest()
         if actual != version.sha256:
             raise ZedApiError(0, "sha256_mismatch", f"expected {version.sha256}, got {actual}")
         with open(dest_path, "wb") as handle:
             handle.write(payload)
+
+    def publish(self, org: str, name: str, version: str, meta: Any, artifact: bytes) -> PublishResponse:
+        """Publish a version: multipart PUT with a ``meta`` field (PublishMeta
+        JSON) and an ``artifact`` field (archive bytes). Requires a bearer
+        token."""
+        meta_json = meta if isinstance(meta, str) else json.dumps(meta)
+        boundary = uuid.uuid4().hex
+        body = b"".join(
+            [
+                (
+                    f"--{boundary}\r\n"
+                    'Content-Disposition: form-data; name="meta"\r\n'
+                    "\r\n"
+                    f"{meta_json}\r\n"
+                ).encode(),
+                (
+                    f"--{boundary}\r\n"
+                    'Content-Disposition: form-data; name="artifact"; filename="artifact.tar.gz"\r\n'
+                    "Content-Type: application/octet-stream\r\n"
+                    "\r\n"
+                ).encode()
+                + artifact
+                + b"\r\n",
+                f"--{boundary}--\r\n".encode(),
+            ]
+        )
+        data = self._request(
+            version_path(org, name, version),
+            method="PUT",
+            data=body,
+            content_type=f"multipart/form-data; boundary={boundary}",
+        )
+        return _from_wire(PublishResponse, data)

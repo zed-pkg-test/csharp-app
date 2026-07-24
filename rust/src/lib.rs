@@ -5,11 +5,26 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use sha2::{Digest, Sha256};
 use zed_interfaces::registry::{
     self, ApiError, ClaimOrgRequest, ClaimOrgResponse, PackageMetadata, PublishMeta,
     PublishResponse, SearchResponse, VersionMetadata,
 };
+
+/// Path-segment encoding: keep RFC 3986 unreserved characters, escape
+/// everything else (including `/`). Org and name are slugs today, but opaque
+/// version tags can contain arbitrary characters that must not break out of
+/// their URL segment.
+const SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+fn encode_segment(segment: &str) -> String {
+    utf8_percent_encode(segment, SEGMENT).to_string()
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -86,15 +101,18 @@ impl Client {
     }
 
     pub fn get_package(&self, org: &str, name: &str) -> Result<PackageMetadata> {
-        let response = self.http.get(self.url(&registry::package_path(org, name))).send()?;
+        let path = registry::package_path(&encode_segment(org), &encode_segment(name));
+        let response = self.http.get(self.url(&path)).send()?;
         Ok(Self::check(response)?.json()?)
     }
 
     pub fn get_version(&self, org: &str, name: &str, version: &str) -> Result<VersionMetadata> {
-        let response = self
-            .http
-            .get(self.url(&registry::version_path(org, name, version)))
-            .send()?;
+        let path = registry::version_path(
+            &encode_segment(org),
+            &encode_segment(name),
+            &encode_segment(version),
+        );
+        let response = self.http.get(self.url(&path)).send()?;
         Ok(Self::check(response)?.json()?)
     }
 
@@ -120,7 +138,7 @@ impl Client {
         let url = if version.download_url.starts_with("http") {
             version.download_url.clone()
         } else {
-            self.url(&registry::artifact_path(&version.sha256))
+            self.url(&registry::artifact_path(&encode_segment(&version.sha256)))
         };
         let mut response = Self::check(self.http.get(url).send()?)?;
         let mut bytes = Vec::new();
@@ -144,9 +162,9 @@ impl Client {
         let request = self
             .http
             .put(self.url(&registry::version_path(
-                &package.org,
-                &package.name,
-                &package.version,
+                &encode_segment(&package.org),
+                &encode_segment(&package.name),
+                &encode_segment(&package.version),
             )))
             .multipart(form);
         let response = self.bearer(request).send()?;
@@ -185,6 +203,20 @@ mod tests {
         let err: ApiError =
             serde_json::from_str(r#"{"code":"org_taken","message":"claimed"}"#).unwrap();
         assert_eq!(err.code, "org_taken");
+    }
+
+    #[test]
+    fn path_segments_are_percent_encoded() {
+        assert_eq!(encode_segment("1.2.0"), "1.2.0");
+        assert_eq!(encode_segment("release candidate/1"), "release%20candidate%2F1");
+        assert_eq!(
+            registry::version_path(
+                &encode_segment("acme"),
+                &encode_segment("kit"),
+                &encode_segment("v/2?x"),
+            ),
+            "/v1/packages/acme/kit/versions/v%2F2%3Fx"
+        );
     }
 
     #[test]
