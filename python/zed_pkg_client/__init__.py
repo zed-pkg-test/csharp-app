@@ -4,6 +4,7 @@ mirroring the JSON Schemas in zed-interfaces/schemas/."""
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import urllib.error
 import urllib.parse
@@ -15,6 +16,30 @@ from typing import Any, Optional
 DEFAULT_REGISTRY_URL = "https://registry.zpkg.tech"
 
 USER_AGENT = "zed-client-python/0.1.0"
+
+# Bounds every request (connect + read), in seconds.
+DEFAULT_TIMEOUT = 30.0
+
+# Hard ceiling on artifact downloads, matching the server's MAX_ARTIFACT_BYTES
+# default (100 MiB); plus the slack added to a version's declared size.
+MAX_ARTIFACT_BYTES = 100 * 1024 * 1024
+_DOWNLOAD_SLACK = 1024 * 1024
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _download_limit(size: int) -> int:
+    """The declared size (when sane) plus slack, capped by the ceiling."""
+    if size and size > 0:
+        return min(size + _DOWNLOAD_SLACK, MAX_ARTIFACT_BYTES)
+    return MAX_ARTIFACT_BYTES
 
 
 class ZedApiError(Exception):
@@ -111,9 +136,30 @@ class ZedClient:
         self,
         registry_url: str = DEFAULT_REGISTRY_URL,
         token: Optional[str] = None,
+        timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self.base = registry_url.rstrip("/")
         self.token = token
+        self.timeout = timeout
+
+    def _allowed_download_url(self, raw: str) -> str:
+        """Enforce the download-url scheme policy: https is always allowed; http
+        only for loopback hosts or when the registry base is itself http. A
+        malicious registry response must not redirect fetches to plaintext or
+        unexpected hosts."""
+        parsed = urllib.parse.urlparse(raw)
+        scheme = parsed.scheme
+        loopback = _is_loopback_host(parsed.hostname or "")
+        if scheme == "https":
+            return raw
+        if scheme == "http" and (loopback or self.base.startswith("http://")):
+            return raw
+        raise ZedApiError(
+            0,
+            "insecure_download_url",
+            f"refusing artifact download over {scheme!r} from {raw} "
+            "(https required for non-local registries)",
+        )
 
     def _headers(self) -> dict:
         headers = {"user-agent": USER_AGENT}
@@ -138,7 +184,7 @@ class ZedClient:
             headers["content-type"] = content_type
         request = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
-            with urllib.request.urlopen(request) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 return json.loads(response.read().decode())
         except urllib.error.HTTPError as error:
             raise _api_error(error) from None
@@ -159,14 +205,35 @@ class ZedClient:
     def download_artifact(self, version: VersionMetadata, dest_path: str) -> None:
         """Download and sha256-verify an artifact."""
         url = version.download_url
-        if not url.startswith("http"):
+        # An absolute url (any scheme) must clear the scheme/host policy; a bare
+        # path is resolved against the trusted registry base.
+        if "://" in url:
+            url = self._allowed_download_url(url)
+        else:
             url = f"{self.base}{artifact_path(version.sha256)}"
-        request = urllib.request.Request(url, headers=self._headers())
+        # Deliberately no auth header: download_url may point at a third-party
+        # host (e.g. a presigned S3/R2 url), and sending the bearer token there
+        # would leak it. Only a user-agent is sent.
+        request = urllib.request.Request(url, headers={"user-agent": USER_AGENT})
+        limit = _download_limit(version.size)
         try:
-            with urllib.request.urlopen(request) as response:
-                payload = response.read()
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                declared = response.headers.get("Content-Length")
+                if declared is not None:
+                    try:
+                        if int(declared) > limit:
+                            raise ZedApiError(
+                                0, "artifact_too_large", f"artifact exceeded {limit} bytes; refusing"
+                            )
+                    except ValueError:
+                        pass
+                # Read one extra byte so an over-limit body is detected without
+                # buffering the whole thing.
+                payload = response.read(limit + 1)
         except urllib.error.HTTPError as error:
             raise _api_error(error) from None
+        if len(payload) > limit:
+            raise ZedApiError(0, "artifact_too_large", f"artifact exceeded {limit} bytes; refusing")
         actual = hashlib.sha256(payload).hexdigest()
         if actual != version.sha256:
             raise ZedApiError(0, "sha256_mismatch", f"expected {version.sha256}, got {actual}")
