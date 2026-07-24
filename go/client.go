@@ -10,13 +10,40 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 const DefaultRegistryURL = "https://registry.zpkg.tech"
+
+// DefaultTimeout bounds each HTTP request (connect + read).
+const DefaultTimeout = 30 * time.Second
+
+const (
+	// maxArtifactBytes is the hard ceiling on artifact downloads, matching the
+	// server's MAX_ARTIFACT_BYTES default (100 MiB).
+	maxArtifactBytes = 100 * 1024 * 1024
+	// downloadSlack is the allowance added to a version's declared size.
+	downloadSlack = 1024 * 1024
+)
+
+// downloadLimit bounds an artifact read: the declared size (when sane) plus
+// slack, capped by the static ceiling. A zero/unknown size falls back to the
+// ceiling.
+func downloadLimit(size uint64) uint64 {
+	if size == 0 {
+		return maxArtifactBytes
+	}
+	limit := size + downloadSlack
+	if limit < size || limit > maxArtifactBytes { // overflow or over ceiling
+		return maxArtifactBytes
+	}
+	return limit
+}
 
 // APIError carries the registry's stable error code.
 type APIError struct {
@@ -97,7 +124,36 @@ type Client struct {
 }
 
 func New(base string) *Client {
-	return &Client{Base: strings.TrimRight(base, "/"), HTTP: http.DefaultClient}
+	return &Client{Base: strings.TrimRight(base, "/"), HTTP: &http.Client{Timeout: DefaultTimeout}}
+}
+
+// allowedDownloadURL enforces the download-url scheme policy: https is always
+// allowed; http only for loopback hosts or when the registry base is itself
+// http (the operator already accepted plaintext for that registry). A
+// malicious registry response must not be able to redirect fetches to
+// plaintext or unexpected hosts.
+func (c *Client) allowedDownloadURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", &APIError{Code: "bad_download_url", Message: fmt.Sprintf("bad download url %q: %v", raw, err)}
+	}
+	host := u.Hostname()
+	loopback := host == "localhost"
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		loopback = true
+	}
+	switch u.Scheme {
+	case "https":
+		return raw, nil
+	case "http":
+		if loopback || strings.HasPrefix(c.Base, "http://") {
+			return raw, nil
+		}
+	}
+	return "", &APIError{
+		Code:    "insecure_download_url",
+		Message: fmt.Sprintf("refusing artifact download over %q from %s (https required for non-local registries)", u.Scheme, raw),
+	}
 }
 
 func (c *Client) do(method, path string, body io.Reader, contentType string, out any) error {
@@ -175,27 +231,41 @@ func (c *Client) ClaimOrg(slug string) (*ClaimOrgResponse, error) {
 // DownloadArtifact fetches and sha256-verifies an artifact to destPath.
 func (c *Client) DownloadArtifact(v *VersionMetadata, destPath string) error {
 	target := v.DownloadURL
-	if !strings.HasPrefix(target, "http") {
+	// An absolute url (any scheme) must clear the scheme/host policy; a bare
+	// path is resolved against the trusted registry base.
+	if strings.Contains(target, "://") {
+		validated, err := c.allowedDownloadURL(target)
+		if err != nil {
+			return err
+		}
+		target = validated
+	} else {
 		target = c.Base + ArtifactPath(v.Sha256)
 	}
 	req, err := http.NewRequest(http.MethodGet, target, nil)
 	if err != nil {
 		return err
 	}
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-	}
+	// Deliberately no Authorization header: download_url may point at a
+	// third-party host (e.g. a presigned S3/R2 URL from the registry
+	// response), and sending the bearer token there would leak it.
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	payload, err := io.ReadAll(resp.Body)
+	// Bound the read to guard against OOM / disk exhaustion; read one extra
+	// byte so an over-limit body can be detected.
+	limit := downloadLimit(v.Size)
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return newAPIError(resp.StatusCode, payload)
+	}
+	if uint64(len(payload)) > limit {
+		return &APIError{Code: "artifact_too_large", Message: fmt.Sprintf("artifact exceeded %d bytes; refusing", limit)}
 	}
 	sum := sha256.Sum256(payload)
 	if actual := hex.EncodeToString(sum[:]); actual != v.Sha256 {
