@@ -1,0 +1,28 @@
+# zed package manifest. This repo is POLYGLOT: each [targets.<lang>]
+# below publishes as its own package `zed-pkg/zed-clients-<lang>` at this
+# single shared version, so a consumer installs (and downloads) only
+# the language it actually uses. See zed-docs doc 17.
+
+[package]
+org = "zed-pkg"
+name = "zed-clients"
+version = "0.1.0"
+description = "zed-pkg API clients, one package per language"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/zed-pkg/zed-clients"
+
+[targets.golang]
+dir = "go"
+
+[targets.nodejs]
+dir = "typescript"
+adapter = "node"
+
+[targets.python]
+dir = "python"
+
+[targets.rust]
+dir = "rust"
