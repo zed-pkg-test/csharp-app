@@ -1458,6 +1458,7 @@ dependencies = [
  "hex",
  "percent-encoding",
  "reqwest",
+ "serde",
  "serde_json",
  "sha2",
  "thiserror",

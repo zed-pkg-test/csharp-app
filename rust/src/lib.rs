@@ -5,11 +5,12 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
-use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use zed_interfaces::registry::{
     self, ApiError, ClaimOrgRequest, ClaimOrgResponse, PackageMetadata, PublishMeta,
-    PublishResponse, SearchResponse, VersionMetadata,
+    PublishResponse, SearchResponse, VersionMetadata, YankRequest, YankResponse,
 };
 
 /// Path-segment encoding: keep RFC 3986 unreserved characters, escape
@@ -34,6 +35,13 @@ const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// declared size.
 const MAX_ARTIFACT_BYTES: u64 = 100 * 1024 * 1024;
 const DOWNLOAD_SLACK: u64 = 1024 * 1024;
+
+/// Default ceiling on a JSON response body (16 MiB). Metadata, search results
+/// and error bodies are all small; without a cap a hostile or compromised
+/// registry can exhaust client memory by streaming an unbounded body at
+/// `get_package` / `get_version` / `search`. Override per client with
+/// [`Client::with_max_response_bytes`].
+pub const DEFAULT_MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The declared size (when sane) plus slack, capped by the ceiling.
 fn download_limit(size: u64) -> u64 {
@@ -68,6 +76,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Client {
     base: String,
     token: Option<String>,
+    max_response_bytes: u64,
     http: reqwest::blocking::Client,
 }
 
@@ -76,6 +85,7 @@ impl Client {
         Ok(Self {
             base: base_url.into().trim_end_matches('/').to_string(),
             token: None,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             http: reqwest::blocking::Client::builder()
                 .user_agent(concat!("zed-client-rust/", env!("CARGO_PKG_VERSION")))
                 .timeout(DEFAULT_TIMEOUT)
@@ -88,16 +98,59 @@ impl Client {
         self
     }
 
+    /// Override the ceiling on JSON response bodies (default
+    /// [`DEFAULT_MAX_RESPONSE_BYTES`]). Artifact downloads keep their own,
+    /// larger cap derived from the version's declared size.
+    pub fn with_max_response_bytes(mut self, limit: u64) -> Self {
+        self.max_response_bytes = limit;
+        self
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)
     }
 
-    fn check(response: reqwest::blocking::Response) -> Result<reqwest::blocking::Response> {
+    /// Read at most `limit` bytes of a response body. One extra byte is read so
+    /// an over-limit body is detected without buffering the whole thing, and a
+    /// declared `Content-Length` past the limit is refused before any read.
+    fn read_capped(
+        response: reqwest::blocking::Response,
+        limit: u64,
+        what: &str,
+    ) -> Result<Vec<u8>> {
+        let too_large = || Error::Other(format!("{what} exceeded {limit} bytes; refusing"));
+        if response.content_length().is_some_and(|len| len > limit) {
+            return Err(too_large());
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(limit.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit {
+            return Err(too_large());
+        }
+        Ok(bytes)
+    }
+
+    fn check(&self, response: reqwest::blocking::Response) -> Result<reqwest::blocking::Response> {
         if response.status().is_success() {
             return Ok(response);
         }
         let status = response.status().as_u16();
-        let body = response.text().unwrap_or_default();
+        // The error body is attacker-controlled like any other, so it is read
+        // under the same cap; a body that blows the cap still surfaces its
+        // status rather than being read into memory.
+        let body = match Self::read_capped(response, self.max_response_bytes, "registry error body")
+        {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(err) => {
+                return Err(Error::Api {
+                    status,
+                    code: "unknown".into(),
+                    message: format!("<error body unavailable: {err}>"),
+                });
+            }
+        };
         match serde_json::from_str::<ApiError>(&body) {
             Ok(err) => Err(Error::Api {
                 status,
@@ -112,7 +165,19 @@ impl Client {
         }
     }
 
-    fn bearer(&self, request: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
+    /// Check the status, then decode the body under the response cap. Replaces
+    /// `reqwest`'s `json()`, which buffers an unbounded body.
+    fn json<T: DeserializeOwned>(&self, response: reqwest::blocking::Response) -> Result<T> {
+        let response = self.check(response)?;
+        let bytes = Self::read_capped(response, self.max_response_bytes, "registry response")?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| Error::Other(format!("invalid registry response: {e}")))
+    }
+
+    fn bearer(
+        &self,
+        request: reqwest::blocking::RequestBuilder,
+    ) -> reqwest::blocking::RequestBuilder {
         match &self.token {
             Some(token) => request.bearer_auth(token),
             None => request,
@@ -122,7 +187,7 @@ impl Client {
     pub fn get_package(&self, org: &str, name: &str) -> Result<PackageMetadata> {
         let path = registry::package_path(&encode_segment(org), &encode_segment(name));
         let response = self.http.get(self.url(&path)).send()?;
-        Ok(Self::check(response)?.json()?)
+        self.json(response)
     }
 
     pub fn get_version(&self, org: &str, name: &str, version: &str) -> Result<VersionMetadata> {
@@ -132,7 +197,7 @@ impl Client {
             &encode_segment(version),
         );
         let response = self.http.get(self.url(&path)).send()?;
-        Ok(Self::check(response)?.json()?)
+        self.json(response)
     }
 
     pub fn search(&self, query: &str) -> Result<SearchResponse> {
@@ -141,15 +206,35 @@ impl Client {
             .get(self.url(&registry::search_path()))
             .query(&[("q", query)])
             .send()?;
-        Ok(Self::check(response)?.json()?)
+        self.json(response)
     }
 
     pub fn claim_org(&self, slug: &str) -> Result<ClaimOrgResponse> {
-        let request = self.http.post(self.url(&registry::orgs_path())).json(&ClaimOrgRequest {
-            slug: slug.to_string(),
-        });
+        let request = self
+            .http
+            .post(self.url(&registry::orgs_path()))
+            .json(&ClaimOrgRequest {
+                slug: slug.to_string(),
+            });
         let response = self.bearer(request).send()?;
-        Ok(Self::check(response)?.json()?)
+        self.json(response)
+    }
+
+    /// Yank a published version (`yanked: true`) or restore one (`false`).
+    /// Yanked versions stay downloadable for existing lockfiles but are hidden
+    /// from fresh resolution and search — the way a compromised release is
+    /// pulled. Requires a bearer token with publish rights on the org.
+    pub fn yank(&self, org: &str, name: &str, version: &str, yanked: bool) -> Result<YankResponse> {
+        let request = self
+            .http
+            .post(self.url(&registry::yank_path(
+                &encode_segment(org),
+                &encode_segment(name),
+                &encode_segment(version),
+            )))
+            .json(&YankRequest { yanked });
+        let response = self.bearer(request).send()?;
+        self.json(response)
     }
 
     /// Enforce the download-url scheme policy: https is always allowed; http
@@ -183,10 +268,12 @@ impl Client {
         let url = if version.download_url.contains("://") {
             self.allowed_download_url(&version.download_url)?
         } else {
-            reqwest::Url::parse(&self.url(&registry::artifact_path(&encode_segment(&version.sha256))))
-                .map_err(|e| Error::Other(format!("bad registry url: {e}")))?
+            reqwest::Url::parse(
+                &self.url(&registry::artifact_path(&encode_segment(&version.sha256))),
+            )
+            .map_err(|e| Error::Other(format!("bad registry url: {e}")))?
         };
-        let response = Self::check(self.http.get(url).send()?)?;
+        let response = self.check(self.http.get(url).send()?)?;
         // Bound the read to guard against OOM; read one extra byte so an
         // over-limit body is detected without buffering it whole.
         let limit = download_limit(version.size);
@@ -223,7 +310,7 @@ impl Client {
             )))
             .multipart(form);
         let response = self.bearer(request).send()?;
-        Ok(Self::check(response)?.json()?)
+        self.json(response)
     }
 }
 
@@ -263,7 +350,10 @@ mod tests {
     #[test]
     fn path_segments_are_percent_encoded() {
         assert_eq!(encode_segment("1.2.0"), "1.2.0");
-        assert_eq!(encode_segment("release candidate/1"), "release%20candidate%2F1");
+        assert_eq!(
+            encode_segment("release candidate/1"),
+            "release%20candidate%2F1"
+        );
         assert_eq!(
             registry::version_path(
                 &encode_segment("acme"),
@@ -305,7 +395,11 @@ mod tests {
     #[test]
     fn loopback_http_download_url_is_allowed() {
         let client = Client::new("https://registry.zpkg.tech").unwrap();
-        assert!(client.allowed_download_url("http://127.0.0.1:8080/a").is_ok());
+        assert!(
+            client
+                .allowed_download_url("http://127.0.0.1:8080/a")
+                .is_ok()
+        );
         assert!(client.allowed_download_url("http://localhost/a").is_ok());
         assert!(client.allowed_download_url("https://cdn.example/a").is_ok());
     }
@@ -373,8 +467,11 @@ mod download_tests {
         let sha = hex::encode(Sha256::digest(&body));
         let (base, rx) = spawn_server(body.clone());
         let client = Client::new(&base).unwrap().with_token("zpkg_t");
-        let dir =
-            std::env::temp_dir().join(format!("zed-dl-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let dir = std::env::temp_dir().join(format!(
+            "zed-dl-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         let dest = dir.join("artifact.tar.gz");
         let v = version(&format!("{base}/artifact"), &sha, body.len() as u64);
         client.download_artifact(&v, &dest).unwrap();
