@@ -34,6 +34,13 @@ dir = "go"
 name = "zed-clients-golang"
 adapter = "go"
 
+# The module proxy resolves a subdirectory module by `<subdir>/vX.Y.Z`,
+# which the repo-global [publish].tag_format cannot express.
+[targets.golang.native]
+registry = "go-modules"
+package = "github.com/zed-pkg/zed-clients/go"
+tag_format = "go/v{version}"
+
 [targets.rust]
 dir = "rust"
 adapter = "rust"
