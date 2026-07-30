@@ -14,6 +14,12 @@ url = "https://github.com/zed-pkg/zed-clients"
 include_readme = true
 tag_format = "v{version}"
 
+# The whole-repository release surface (zed-docs doc 18). Not a consumer
+# dependency and never routed to by `zed add` -- it exists so a release can
+# ship the complete reviewed snapshot alongside the per-language slices.
+[targets.repository]
+dir = "."
+
 [targets.nodejs]
 dir = "typescript"
 name = "zed-clients-nodejs"
@@ -21,10 +27,13 @@ adapter = "node"
 
 [targets.python]
 dir = "python"
+adapter = "python"
 
 [targets.golang]
 dir = "go"
 name = "zed-clients-golang"
+adapter = "go"
 
 [targets.rust]
 dir = "rust"
+adapter = "rust"
