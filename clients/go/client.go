@@ -1,5 +1,6 @@
-// Package zedclient is the Go SDK for the zed-pkg registry. Stdlib only;
-// structs mirror the JSON Schemas in zed-interfaces/schemas/.
+// Package zedclient is the Go SDK for the zed-pkg registry. It is stdlib only,
+// transports bearer credentials without parsing them, never retries writes, and
+// refuses redirects so credentials cannot be replayed to another target.
 package zedclient
 
 import (
@@ -7,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -19,33 +21,30 @@ import (
 )
 
 const DefaultRegistryURL = "https://registry.zpkg.tech"
-
-// DefaultTimeout bounds each HTTP request (connect + read).
 const DefaultTimeout = 30 * time.Second
 
 const (
-	// maxArtifactBytes is the hard ceiling on artifact downloads, matching the
-	// server's MAX_ARTIFACT_BYTES default (100 MiB).
-	maxArtifactBytes = 100 * 1024 * 1024
-	// downloadSlack is the allowance added to a version's declared size.
-	downloadSlack = 1024 * 1024
+	maxArtifactBytes     = 100 * 1024 * 1024
+	downloadSlack        = 1024 * 1024
+	maxJSONResponseBytes = 16 * 1024 * 1024
+	maxErrorBodyBytes    = 16 * 1024
 )
 
-// downloadLimit bounds an artifact read: the declared size (when sane) plus
-// slack, capped by the static ceiling. A zero/unknown size falls back to the
-// ceiling.
+var errRefuseRedirect = errors.New("zed registry client refuses redirects")
+
 func downloadLimit(size uint64) uint64 {
 	if size == 0 {
 		return maxArtifactBytes
 	}
 	limit := size + downloadSlack
-	if limit < size || limit > maxArtifactBytes { // overflow or over ceiling
+	if limit < size || limit > maxArtifactBytes {
 		return maxArtifactBytes
 	}
 	return limit
 }
 
-// APIError carries the registry's stable error code.
+// APIError carries the registry's stable error code. Message is bounded and
+// explicitly inspectable; Error deliberately excludes arbitrary remote text.
 type APIError struct {
 	Status  int
 	Code    string `json:"code"`
@@ -53,14 +52,15 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("registry error %d: %s: %s", e.Status, e.Code, e.Message)
+	return fmt.Sprintf("registry error %d: %s", e.Status, e.Code)
 }
 
 type PackageSummary struct {
-	Org         string  `json:"org"`
-	Name        string  `json:"name"`
-	Description *string `json:"description,omitempty"`
-	Latest      *string `json:"latest,omitempty"`
+	Org         string   `json:"org"`
+	Name        string   `json:"name"`
+	Description *string  `json:"description,omitempty"`
+	Latest      *string  `json:"latest,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
 }
 
 type PackageMetadata struct {
@@ -70,6 +70,7 @@ type PackageMetadata struct {
 	Vcs           string   `json:"vcs"`
 	RepoURL       string   `json:"repo_url"`
 	Latest        *string  `json:"latest,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
 	Versions      []string `json:"versions"`
 	VersionScheme string   `json:"version_scheme,omitempty"`
 }
@@ -98,6 +99,13 @@ type ClaimOrgResponse struct {
 	Created bool   `json:"created"`
 }
 
+type YankResponse struct {
+	Org     string `json:"org"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Yanked  bool   `json:"yanked"`
+}
+
 type PublishResponse struct {
 	Org     string `json:"org"`
 	Name    string `json:"name"`
@@ -110,7 +118,16 @@ func PackagePath(org, name string) string {
 }
 
 func VersionPath(org, name, version string) string {
-	return fmt.Sprintf("/v1/packages/%s/%s/versions/%s", url.PathEscape(org), url.PathEscape(name), url.PathEscape(version))
+	return fmt.Sprintf(
+		"/v1/packages/%s/%s/versions/%s",
+		url.PathEscape(org),
+		url.PathEscape(name),
+		url.PathEscape(version),
+	)
+}
+
+func YankPath(org, name, version string) string {
+	return VersionPath(org, name, version) + "/yank"
 }
 
 func ArtifactPath(sha256 string) string {
@@ -123,80 +140,166 @@ type Client struct {
 	HTTP  *http.Client
 }
 
-func New(base string) *Client {
-	return &Client{Base: strings.TrimRight(base, "/"), HTTP: &http.Client{Timeout: DefaultTimeout}}
+func New(base string) (*Client, error) {
+	return NewWithHTTPClient(base, nil)
 }
 
-// allowedDownloadURL enforces the download-url scheme policy: https is always
-// allowed; http only for loopback hosts or when the registry base is itself
-// http (the operator already accepted plaintext for that registry). A
-// malicious registry response must not be able to redirect fetches to
-// plaintext or unexpected hosts.
-func (c *Client) allowedDownloadURL(raw string) (string, error) {
-	u, err := url.Parse(raw)
+func NewWithHTTPClient(base string, supplied *http.Client) (*Client, error) {
+	normalized, err := normalizeRegistryURL(base)
 	if err != nil {
-		return "", &APIError{Code: "bad_download_url", Message: fmt.Sprintf("bad download url %q: %v", raw, err)}
+		return nil, err
 	}
-	host := u.Hostname()
+	client := &http.Client{Timeout: DefaultTimeout}
+	if supplied != nil {
+		clone := *supplied
+		client = &clone
+		if client.Timeout == 0 {
+			client.Timeout = DefaultTimeout
+		}
+	}
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return errRefuseRedirect
+	}
+	return &Client{Base: normalized, HTTP: client}, nil
+}
+
+func (c *Client) String() string {
+	return fmt.Sprintf("ZedClient(base=%s, token=[REDACTED])", c.Base)
+}
+
+func normalizeRegistryURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.Parse(trimmed)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf(
+			"registry URL must be a credential-free absolute HTTP(S) URL without query or fragment",
+		)
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+func (c *Client) allowedDownloadURL(raw string) (string, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.User != nil || parsed.Fragment != "" {
+		return "", &APIError{Code: "bad_download_url", Message: "download URL is invalid"}
+	}
+	host := parsed.Hostname()
 	loopback := host == "localhost"
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 		loopback = true
 	}
-	switch u.Scheme {
+	switch parsed.Scheme {
 	case "https":
-		return raw, nil
+		return parsed.String(), nil
 	case "http":
 		if loopback || strings.HasPrefix(c.Base, "http://") {
-			return raw, nil
+			return parsed.String(), nil
 		}
 	}
 	return "", &APIError{
 		Code:    "insecure_download_url",
-		Message: fmt.Sprintf("refusing artifact download over %q from %s (https required for non-local registries)", u.Scheme, raw),
+		Message: fmt.Sprintf("refusing artifact download over %q", parsed.Scheme),
 	}
 }
 
-func (c *Client) do(method, path string, body io.Reader, contentType string, out any) error {
+func (c *Client) resolveDownloadURL(raw, sha256 string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return c.Base + ArtifactPath(sha256), nil
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", &APIError{Code: "bad_download_url", Message: "download URL is invalid"}
+	}
+	if !parsed.IsAbs() {
+		base, parseErr := url.Parse(c.Base + "/")
+		if parseErr != nil {
+			return "", parseErr
+		}
+		parsed = base.ResolveReference(parsed)
+	}
+	return c.allowedDownloadURL(parsed.String())
+}
+
+func (c *Client) do(
+	method string,
+	path string,
+	body io.Reader,
+	contentType string,
+	authorized bool,
+	out any,
+) error {
 	req, err := http.NewRequest(method, c.Base+path, body)
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Accept", "application/json")
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
+	if authorized && c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(c.Token))
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	payload, err := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		payload, readErr := readBounded(resp.Body, maxErrorBodyBytes, false)
+		if readErr != nil {
+			return readErr
+		}
+		return newAPIError(resp.StatusCode, payload)
+	}
+	payload, err := readBounded(resp.Body, maxJSONResponseBytes, true)
 	if err != nil {
 		return err
 	}
-	if resp.StatusCode >= 400 {
-		return newAPIError(resp.StatusCode, payload)
-	}
 	if out != nil {
-		return json.Unmarshal(payload, out)
+		if err := json.Unmarshal(payload, out); err != nil {
+			return fmt.Errorf("decode registry response: %w", err)
+		}
 	}
 	return nil
 }
 
-// newAPIError builds the typed error from an error-response body, keeping the
-// "unknown" code when the body is not ApiError JSON.
+func readBounded(reader io.Reader, limit int, failOnOverflow bool) ([]byte, error) {
+	payload, err := io.ReadAll(io.LimitReader(reader, int64(limit+1)))
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > limit {
+		if failOnOverflow {
+			return nil, fmt.Errorf("registry response exceeded %d bytes", limit)
+		}
+		payload = payload[:limit]
+	}
+	return payload, nil
+}
+
 func newAPIError(status int, payload []byte) *APIError {
-	apiErr := &APIError{Status: status, Code: "unknown", Message: string(payload)}
-	_ = json.Unmarshal(payload, apiErr)
-	apiErr.Status = status
+	apiErr := &APIError{Status: status, Code: fmt.Sprintf("http_%d", status), Message: string(payload)}
+	var decoded struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(payload, &decoded) == nil {
+		if decoded.Code != "" {
+			apiErr.Code = decoded.Code
+		}
+		if decoded.Message != "" {
+			apiErr.Message = decoded.Message
+		}
+	}
 	return apiErr
 }
 
 func (c *Client) GetPackage(org, name string) (*PackageMetadata, error) {
 	var out PackageMetadata
-	if err := c.do(http.MethodGet, PackagePath(org, name), nil, "", &out); err != nil {
+	if err := c.do(http.MethodGet, PackagePath(org, name), nil, "", false, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -204,7 +307,7 @@ func (c *Client) GetPackage(org, name string) (*PackageMetadata, error) {
 
 func (c *Client) GetVersion(org, name, version string) (*VersionMetadata, error) {
 	var out VersionMetadata
-	if err := c.do(http.MethodGet, VersionPath(org, name, version), nil, "", &out); err != nil {
+	if err := c.do(http.MethodGet, VersionPath(org, name, version), nil, "", false, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -213,71 +316,90 @@ func (c *Client) GetVersion(org, name, version string) (*VersionMetadata, error)
 func (c *Client) Search(query string) (*SearchResponse, error) {
 	var out SearchResponse
 	path := "/v1/search?q=" + url.QueryEscape(query)
-	if err := c.do(http.MethodGet, path, nil, "", &out); err != nil {
+	if err := c.do(http.MethodGet, path, nil, "", false, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
 func (c *Client) ClaimOrg(slug string) (*ClaimOrgResponse, error) {
-	body, _ := json.Marshal(map[string]string{"slug": slug})
+	body, err := json.Marshal(map[string]string{"slug": slug})
+	if err != nil {
+		return nil, err
+	}
 	var out ClaimOrgResponse
-	if err := c.do(http.MethodPost, "/v1/orgs", bytes.NewReader(body), "application/json", &out); err != nil {
+	if err := c.do(http.MethodPost, "/v1/orgs", bytes.NewReader(body), "application/json", true, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// DownloadArtifact fetches and sha256-verifies an artifact to destPath.
-func (c *Client) DownloadArtifact(v *VersionMetadata, destPath string) error {
-	target := v.DownloadURL
-	// An absolute url (any scheme) must clear the scheme/host policy; a bare
-	// path is resolved against the trusted registry base.
-	if strings.Contains(target, "://") {
-		validated, err := c.allowedDownloadURL(target)
-		if err != nil {
-			return err
-		}
-		target = validated
-	} else {
-		target = c.Base + ArtifactPath(v.Sha256)
+func (c *Client) Yank(org, name, version string, yanked bool) (*YankResponse, error) {
+	body, err := json.Marshal(map[string]bool{"yanked": yanked})
+	if err != nil {
+		return nil, err
+	}
+	var out YankResponse
+	if err := c.do(
+		http.MethodPost,
+		YankPath(org, name, version),
+		bytes.NewReader(body),
+		"application/json",
+		true,
+		&out,
+	); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DownloadArtifact(version *VersionMetadata, destPath string) error {
+	target, err := c.resolveDownloadURL(version.DownloadURL, version.Sha256)
+	if err != nil {
+		return err
 	}
 	req, err := http.NewRequest(http.MethodGet, target, nil)
 	if err != nil {
 		return err
 	}
-	// Deliberately no Authorization header: download_url may point at a
-	// third-party host (e.g. a presigned S3/R2 URL from the registry
-	// response), and sending the bearer token there would leak it.
+	// Deliberately no Authorization header: target may be a third-party
+	// presigned URL and registry credentials must never leave the registry.
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	// Bound the read to guard against OOM / disk exhaustion; read one extra
-	// byte so an over-limit body can be detected.
-	limit := downloadLimit(v.Size)
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+	limit := downloadLimit(version.Size)
+	if resp.ContentLength > int64(limit) {
+		return &APIError{Code: "artifact_too_large", Message: fmt.Sprintf("artifact exceeded %d bytes", limit)}
+	}
+	payload, err := readBounded(resp.Body, int(limit), true)
 	if err != nil {
-		return err
+		return &APIError{Code: "artifact_too_large", Message: err.Error()}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if len(payload) > maxErrorBodyBytes {
+			payload = payload[:maxErrorBodyBytes]
+		}
 		return newAPIError(resp.StatusCode, payload)
 	}
-	if uint64(len(payload)) > limit {
-		return &APIError{Code: "artifact_too_large", Message: fmt.Sprintf("artifact exceeded %d bytes; refusing", limit)}
-	}
 	sum := sha256.Sum256(payload)
-	if actual := hex.EncodeToString(sum[:]); actual != v.Sha256 {
-		return &APIError{Code: "sha256_mismatch", Message: fmt.Sprintf("expected %s, got %s", v.Sha256, actual)}
+	if actual := hex.EncodeToString(sum[:]); actual != version.Sha256 {
+		return &APIError{Code: "sha256_mismatch", Message: fmt.Sprintf("expected %s, got %s", version.Sha256, actual)}
 	}
 	return os.WriteFile(destPath, payload, 0o644)
 }
 
-// Publish uploads multipart meta (PublishMeta JSON) + the artifact file.
-func (c *Client) Publish(org, name, version string, metaJSON []byte, artifactPath string) (*PublishResponse, error) {
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
+// Publish uploads multipart meta JSON plus raw artifact bytes. It does not retry.
+func (c *Client) Publish(
+	org string,
+	name string,
+	version string,
+	metaJSON []byte,
+	artifactPath string,
+) (*PublishResponse, error) {
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
 	if err := writer.WriteField("meta", string(metaJSON)); err != nil {
 		return nil, err
 	}
@@ -297,7 +419,14 @@ func (c *Client) Publish(org, name, version string, metaJSON []byte, artifactPat
 		return nil, err
 	}
 	var out PublishResponse
-	if err := c.do(http.MethodPut, VersionPath(org, name, version), &buf, writer.FormDataContentType(), &out); err != nil {
+	if err := c.do(
+		http.MethodPut,
+		VersionPath(org, name, version),
+		&buffer,
+		writer.FormDataContentType(),
+		true,
+		&out,
+	); err != nil {
 		return nil, err
 	}
 	return &out, nil
