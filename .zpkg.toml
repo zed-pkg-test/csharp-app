@@ -65,3 +65,15 @@ adapter = "none"
 [targets.erlang]
 dir = "clients/erlang"
 adapter = "none"
+
+[targets.java]
+dir = "clients/java"
+adapter = "java"
+
+[targets.java.native]
+registry = "maven-central"
+package = "tech.zpkg:zed-client"
+forge = ["github-packages", "gitlab-packages", "bitbucket-packages"]
+
+[targets.swift]
+dir = "clients/swift"
