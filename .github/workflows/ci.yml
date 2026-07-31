@@ -17,7 +17,25 @@ jobs:
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test
-        working-directory: zed-clients/rust
+        working-directory: zed-clients/clients/rust
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zed-clients
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo test
+        working-directory: zed-clients/clients/wasm
+      - run: cargo check --target wasm32-unknown-unknown
+        working-directory: zed-clients/clients/wasm
 
   typescript:
     runs-on: ubuntu-latest
@@ -27,7 +45,7 @@ jobs:
         with:
           node-version: 22
       - run: npm install && npm run build && npm test
-        working-directory: typescript
+        working-directory: clients/typescript
 
   python:
     runs-on: ubuntu-latest
@@ -37,7 +55,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m compileall -q zed_pkg_client && python -m unittest -v
-        working-directory: python
+        working-directory: clients/python
 
   go:
     runs-on: ubuntu-latest
@@ -47,4 +65,35 @@ jobs:
         with:
           go-version: "1.22"
       - run: go vet ./... && go test ./...
-        working-directory: go
+        working-directory: clients/go
+
+  dart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+      - run: dart pub get && dart analyze && dart test
+        working-directory: clients/dart
+
+  gleam:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          gleam-version: "1.16"
+          rebar3-version: "3"
+      - run: gleam test
+        working-directory: clients/gleam
+
+  erlang:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          rebar3-version: "3"
+      - run: rebar3 compile && rebar3 eunit
+        working-directory: clients/erlang

@@ -4,3 +4,8 @@ dist/
 __pycache__/
 *.egg-info/
 .zed/
+_build/
+build/
+.dart_tool/
+clients/dart/pubspec.lock
+clients/wasm/pkg/

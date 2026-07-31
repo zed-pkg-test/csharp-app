@@ -21,16 +21,16 @@ tag_format = "v{version}"
 dir = "."
 
 [targets.nodejs]
-dir = "typescript"
+dir = "clients/typescript"
 name = "zed-clients-nodejs"
 adapter = "node"
 
 [targets.python]
-dir = "python"
+dir = "clients/python"
 adapter = "python"
 
 [targets.golang]
-dir = "go"
+dir = "clients/go"
 name = "zed-clients-golang"
 adapter = "go"
 
@@ -38,9 +38,30 @@ adapter = "go"
 # which the repo-global [publish].tag_format cannot express.
 [targets.golang.native]
 registry = "go-modules"
-package = "github.com/zed-pkg/zed-clients/go"
-tag_format = "go/v{version}"
+package = "github.com/zed-pkg/zed-clients/clients/go"
+tag_format = "clients/go/v{version}"
 
 [targets.rust]
-dir = "rust"
+dir = "clients/rust"
 adapter = "rust"
+
+[targets.rust-wasm]
+dir = "clients/wasm"
+name = "zed-clients-wasm"
+adapter = "node"
+
+[targets.dart]
+dir = "clients/dart"
+adapter = "dart"
+
+# The pinned zed toolchain recognizes Gleam and Erlang as language targets but
+# does not yet provide consumer installers. Keep the language-gated slices
+# publishable while native BEAM dependency wiring remains the package manager's
+# job.
+[targets.gleam]
+dir = "clients/gleam"
+adapter = "none"
+
+[targets.erlang]
+dir = "clients/erlang"
+adapter = "none"
