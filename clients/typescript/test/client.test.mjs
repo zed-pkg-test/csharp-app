@@ -56,8 +56,8 @@ test("registry base URLs are validated and gateway prefixes are preserved", () =
   }
 });
 
-test("errors carry a stable code without exposing bounded remote text by default", async () => {
-  const remote = "provider-secret".repeat(MAX_ERROR_BODY_BYTES);
+test("complete structured errors preserve their stable registry code", async () => {
+  const remote = "provider-secret";
   const fakeFetch = async () =>
     new Response(JSON.stringify({ code: "org_taken", message: remote }), { status: 409 });
   const client = new ZedClient({ registryUrl: "https://x.test///", fetchImpl: fakeFetch });
@@ -68,6 +68,25 @@ test("errors carry a stable code without exposing bounded remote text by default
       assert.equal(error.code, "org_taken");
       assert.equal(error.status, 409);
       assert.equal(error.message, "registry error 409: org_taken");
+      assert.equal(error.registryMessage, remote);
+      assert.ok(!error.message.includes("provider-secret"));
+      return true;
+    },
+  );
+});
+
+test("truncated JSON errors fall back to a stable HTTP-derived code", async () => {
+  const remote = "provider-secret".repeat(MAX_ERROR_BODY_BYTES);
+  const fakeFetch = async () =>
+    new Response(JSON.stringify({ code: "org_taken", message: remote }), { status: 409 });
+  const client = new ZedClient({ registryUrl: "https://x.test///", fetchImpl: fakeFetch });
+  await assert.rejects(
+    () => client.claimOrg("acme"),
+    (error) => {
+      assert.ok(error instanceof ZedApiError);
+      assert.equal(error.code, "http_409");
+      assert.equal(error.status, 409);
+      assert.equal(error.message, "registry error 409: http_409");
       assert.ok(!error.message.includes("provider-secret"));
       assert.ok(error.registryMessage.length <= MAX_ERROR_BODY_BYTES + 1);
       return true;
@@ -181,6 +200,27 @@ test("download resolves registry-relative URLs and rejects insecure schemes", as
       (error) => error instanceof ZedApiError && error.code === "insecure_download_url",
     );
   }
+});
+
+test("explicit HTTP development registries may use another HTTP artifact host", async () => {
+  const body = new TextEncoder().encode("development-artifact");
+  let seenUrl;
+  const client = new ZedClient({
+    registryUrl: "http://registry.dev/gateway",
+    fetchImpl: async (url) => {
+      seenUrl = String(url);
+      return new Response(body, { status: 200 });
+    },
+  });
+  const out = await client.downloadArtifact(
+    makeVersion({
+      sha256: sha256Hex(body),
+      size: body.length,
+      download_url: "http://artifacts.dev/artifact",
+    }),
+  );
+  assert.equal(seenUrl, "http://artifacts.dev/artifact");
+  assert.deepEqual(out, body);
 });
 
 test("download allows loopback HTTP and enforces streamed and declared caps", async () => {
