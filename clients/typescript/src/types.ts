@@ -10,6 +10,7 @@ export interface PackageSummary {
   name: string;
   description?: string | null;
   latest?: string | null;
+  tags?: string[];
 }
 
 export interface PackageMetadata {
@@ -21,6 +22,7 @@ export interface PackageMetadata {
   latest?: string | null;
   versions: string[];
   version_scheme?: VersionScheme;
+  tags?: string[];
 }
 
 export interface VersionMetadata {
@@ -45,6 +47,13 @@ export interface SearchResponse {
 export interface ClaimOrgResponse {
   slug: string;
   created: boolean;
+}
+
+export interface YankResponse {
+  org: string;
+  name: string;
+  version: string;
+  yanked: boolean;
 }
 
 export interface PublishResponse {
