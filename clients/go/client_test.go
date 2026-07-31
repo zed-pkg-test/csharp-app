@@ -197,14 +197,22 @@ func TestDownloadArtifactStatusPolicyAndCaps(t *testing.T) {
 		t.Fatal("default error leaked remote message")
 	}
 
+	secureClient := newTestClient(t, "https://registry.zpkg.tech")
 	for _, target := range []string{"http://evil.example/artifact", "file:///etc/passwd"} {
-		err := client.DownloadArtifact(
+		err := secureClient.DownloadArtifact(
 			&VersionMetadata{Sha256: "abc", DownloadURL: target},
 			filepath.Join(t.TempDir(), "a"),
 		)
 		if !errors.As(err, &apiErr) || apiErr.Code != "insecure_download_url" {
 			t.Fatalf("target %q: got %v", target, err)
 		}
+	}
+
+	// An explicitly HTTP registry is a development boundary in every SDK and
+	// may return another HTTP artifact host (for example, a local MinIO service).
+	developmentClient := newTestClient(t, "http://registry.dev")
+	if _, err := developmentClient.allowedDownloadURL("http://artifacts.dev/artifact"); err != nil {
+		t.Fatalf("HTTP development artifact host was rejected: %v", err)
 	}
 
 	limit := downloadLimit(1)
