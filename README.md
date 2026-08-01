@@ -20,12 +20,11 @@ JSON Schemas in `zed-interfaces/schemas/`).
 | [clients/swift/](clients/swift/) | `ZedClient` | Foundation only | `swift test --parallel` |
 
 The shared baseline is package/version lookup, text search, SHA-256-verified
-artifact download, organization claim, and multipart publication using JSON
-`meta` plus raw `artifact` bytes. The current server contract also includes
-version yank/restore; Java and Swift implement it as `yank`, `restore`, and
-`setYanked`, matching the newer WASM/Dart/Gleam/Erlang clients. Completion of
-that operation in the older TypeScript/Python/Go/Rust clients remains tracked
-by the fleet-level parity issue rather than being hidden by an overbroad claim.
+artifact download, organization claim, version yank/restore, and multipart
+publication using JSON `meta` plus raw `artifact` bytes. All ten clients
+implement that core lifecycle. Method names remain idiomatic to each language;
+for example, some clients additionally expose `restore` or `setYanked`
+conveniences over the same yank endpoint.
 
 Every client transports bearer credentials but does not parse them. Registry
 redirects are refused. Artifact downloads do not carry the registry bearer
