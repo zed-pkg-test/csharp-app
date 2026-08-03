@@ -1,7 +1,7 @@
-import { EventEmitter } from 'node:events';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+const playwright = await import('playwright');
 const expectedDiagnostics = [];
 const artifactRoot = process.env.BROWSER_ARTIFACT_DIR
   ? path.resolve(process.env.BROWSER_ARTIFACT_DIR)
@@ -45,35 +45,70 @@ function expectedPageError(error) {
   return null;
 }
 
-const originalOn = EventEmitter.prototype.on;
-EventEmitter.prototype.on = function onWithExpectedBrowserDiagnostics(eventName, listener) {
-  if (this?.constructor?.name !== 'Page' || typeof listener !== 'function') {
-    return originalOn.call(this, eventName, listener);
-  }
+function wrapPage(page) {
+  if (page.__zedExpectedDiagnosticsWrapped) return page;
+  Object.defineProperty(page, '__zedExpectedDiagnosticsWrapped', {
+    value: true,
+    enumerable: false,
+  });
 
-  if (eventName === 'console') {
-    return originalOn.call(this, eventName, function classifyConsole(message, ...rest) {
-      const expected = expectedConsoleDiagnostic(message);
-      if (expected) {
-        expectedDiagnostics.push(expected);
-        return undefined;
-      }
-      return listener.call(this, message, ...rest);
-    });
-  }
+  const originalOn = page.on.bind(page);
+  page.on = (eventName, listener) => {
+    if (typeof listener !== 'function') return originalOn(eventName, listener);
 
-  if (eventName === 'pageerror') {
-    return originalOn.call(this, eventName, function classifyPageError(error, ...rest) {
-      const expected = expectedPageError(error);
-      if (expected) {
-        expectedDiagnostics.push(expected);
-        return undefined;
-      }
-      return listener.call(this, error, ...rest);
-    });
-  }
+    if (eventName === 'console') {
+      return originalOn(eventName, (message, ...rest) => {
+        const expected = expectedConsoleDiagnostic(message);
+        if (expected) {
+          expectedDiagnostics.push(expected);
+          return undefined;
+        }
+        return listener(message, ...rest);
+      });
+    }
 
-  return originalOn.call(this, eventName, listener);
+    if (eventName === 'pageerror') {
+      return originalOn(eventName, (error, ...rest) => {
+        const expected = expectedPageError(error);
+        if (expected) {
+          expectedDiagnostics.push(expected);
+          return undefined;
+        }
+        return listener(error, ...rest);
+      });
+    }
+
+    return originalOn(eventName, listener);
+  };
+  return page;
+}
+
+function wrapContext(context) {
+  if (context.__zedExpectedDiagnosticsWrapped) return context;
+  Object.defineProperty(context, '__zedExpectedDiagnosticsWrapped', {
+    value: true,
+    enumerable: false,
+  });
+  const originalNewPage = context.newPage.bind(context);
+  context.newPage = async (...args) => wrapPage(await originalNewPage(...args));
+  return context;
+}
+
+function wrapBrowser(browser) {
+  if (browser.__zedExpectedDiagnosticsWrapped) return browser;
+  Object.defineProperty(browser, '__zedExpectedDiagnosticsWrapped', {
+    value: true,
+    enumerable: false,
+  });
+  const originalNewContext = browser.newContext.bind(browser);
+  browser.newContext = async (...args) => wrapContext(await originalNewContext(...args));
+  return browser;
+}
+
+const browserTypePrototype = Object.getPrototypeOf(playwright.chromium);
+const originalLaunch = browserTypePrototype.launch;
+browserTypePrototype.launch = async function launchWithExpectedDiagnostics(...args) {
+  return wrapBrowser(await originalLaunch.apply(this, args));
 };
 
 process.on('exit', () => {
