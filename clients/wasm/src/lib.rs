@@ -96,6 +96,12 @@ fn validate_raw_base_path(raw: &str) -> Result<(), String> {
 }
 
 fn validate_relative_download_path(raw: &str) -> Result<(), String> {
+    if raw.starts_with('/') || raw.starts_with('\\') {
+        return Err(
+            "relative download URL must not replace the registry authority or gateway path"
+                .to_string(),
+        );
+    }
     let path_end = raw.find(['?', '#']).unwrap_or(raw.len());
     validate_path_segments(&raw[..path_end], "download_url")
 }
@@ -383,7 +389,14 @@ impl ZedClient {
         init.set_redirect(RequestRedirect::Error);
         let timed_request = Request::new_with_request_and_init(&request, &init)?;
         let timer = schedule_abort(controller, self.timeout_ms)?;
-        let response = match JsFuture::from(global_fetch(&timed_request)?).await {
+        let promise = match global_fetch(&timed_request) {
+            Ok(promise) => promise,
+            Err(error) => {
+                clear_timeout(&timer);
+                return Err(error);
+            }
+        };
+        let response = match JsFuture::from(promise).await {
             Ok(response) => match response.dyn_into::<Response>() {
                 Ok(response) => response,
                 Err(error) => {
@@ -709,9 +722,19 @@ mod tests {
             resolve_download_url("artifacts/hash", base, "abc").unwrap(),
             "https://registry.zpkg.tech/gateway/artifacts/hash"
         );
-        assert!(resolve_download_url("../escape", base, "abc").is_err());
-        assert!(resolve_download_url("%2e%2e/escape", base, "abc").is_err());
-        assert!(resolve_download_url("a%2Fb", base, "abc").is_err());
+        for invalid in [
+            "../escape",
+            "%2e%2e/escape",
+            "a%2Fb",
+            "//evil.example/artifact",
+            "/absolute/artifact",
+            "\\authority-replacement",
+        ] {
+            assert!(
+                resolve_download_url(invalid, base, "abc").is_err(),
+                "accepted {invalid}"
+            );
+        }
     }
 
     #[test]
