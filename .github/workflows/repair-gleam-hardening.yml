@@ -1,0 +1,104 @@
+name: repair Gleam hardening
+
+on:
+  push:
+    branches:
+      - alexanderdmills/den-1403-gleam-client-hardening
+    paths:
+      - .github/workflows/repair-gleam-hardening.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: alexanderdmills/den-1403-gleam-client-hardening
+          persist-credentials: true
+          show-progress: false
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93
+        with:
+          otp-version: "27"
+          gleam-version: "1.16"
+          rebar3-version: "3"
+      - name: Correct decoder composition and add malformed-meta regression
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path('clients/gleam/src/zed_pkg_client.gleam')
+          source = source_path.read_text(encoding='utf-8')
+          source = source.replace('import gleam/list\n', '', 1)
+          old = '''fn publish_coordinate_decoder() -> decode.Decoder(#(String, String, String)) {
+            use org <- decode.at(["manifest", "package", "org"], decode.string)
+            use name <- decode.at(["manifest", "package", "name"], decode.string)
+            use version <- decode.at(["manifest", "package", "version"], decode.string)
+            decode.success(#(org, name, version))
+          }
+          '''
+          new = '''fn publish_coordinate_decoder() -> decode.Decoder(#(String, String, String)) {
+            use org <- decode.then(
+              decode.at(["manifest", "package", "org"], decode.string),
+            )
+            use name <- decode.then(
+              decode.at(["manifest", "package", "name"], decode.string),
+            )
+            use version <- decode.then(
+              decode.at(["manifest", "package", "version"], decode.string),
+            )
+            decode.success(#(org, name, version))
+          }
+          '''
+          if source.count(old) != 1:
+              raise SystemExit(f'publish decoder block: expected one match, found {source.count(old)}')
+          source_path.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+          test_path = Path('clients/gleam/test/zed_pkg_client_test.gleam')
+          tests = test_path.read_text(encoding='utf-8')
+          addition = '''
+
+          pub fn malformed_publish_meta_fails_before_transport_test() {
+            let zed =
+              client.new("https://registry.zpkg.tech")
+              |> client.with_token("token")
+              |> client.with_transport(forbidden_transport)
+            let result =
+              client.publish(
+                zed,
+                "acme",
+                "kit",
+                "1.2.0",
+                "not-json",
+                bit_array.from_string("bytes"),
+              )
+            case result {
+              Error(client.InvalidResponse(message: _)) -> Nil
+              other ->
+                panic as {
+                  "expected malformed metadata rejection, got "
+                  <> string.inspect(other)
+                }
+            }
+          }
+          '''
+          if 'malformed_publish_meta_fails_before_transport_test' in tests:
+              raise SystemExit('malformed publish regression already exists')
+          test_path.write_text(tests.rstrip() + addition, encoding='utf-8')
+          PY
+          gleam format src test
+          gleam format --check src test
+          gleam test
+        working-directory: clients/gleam
+      - name: Commit and push exact validated changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add clients/gleam/src/zed_pkg_client.gleam clients/gleam/test/zed_pkg_client_test.gleam
+          git commit -m 'DEN-1403 fix Gleam publish decoding and malformed-meta coverage'
+          git push origin HEAD:alexanderdmills/den-1403-gleam-client-hardening
