@@ -31,14 +31,11 @@ jobs:
 
           wasm = Path('clients/wasm/src/lib.rs')
           source = wasm.read_text(encoding='utf-8')
-          old = '''    fn missing_token_and_invalid_constructor_state_fail_before_transport() {
-              let client = ZedClient::new(Some("relative/path".to_string()));
-              assert!(client.ensure_configured().is_err());
-              let client = ZedClient::new(Some("https://registry.test".to_string()));
-              assert!(client.require_token().is_err());
-          }
-          '''
-          new = '''    fn missing_token_and_invalid_constructor_state_fail_before_transport() {
+          wasm_pattern = re.compile(
+              r'    fn missing_token_and_invalid_constructor_state_fail_before_transport\(\) \{.*?\n    \}\n\}',
+              re.DOTALL,
+          )
+          wasm_replacement = '''    fn missing_token_and_invalid_constructor_state_fail_before_transport() {
               let client = ZedClient::new(Some("relative/path".to_string()));
               assert!(client.configuration_error.is_some());
               let mut client = ZedClient::new(Some("https://registry.test".to_string()));
@@ -46,18 +43,19 @@ jobs:
               client.with_token("   ".to_string());
               assert!(client.token.is_none());
           }
-          '''
-          if source.count(old) != 1:
-              raise SystemExit(f'WASM native-only state test: expected one match, found {source.count(old)}')
-          wasm.write_text(source.replace(old, new, 1), encoding='utf-8')
+          }'''
+          updated, count = wasm_pattern.subn(wasm_replacement, source, count=1)
+          if count != 1:
+              raise SystemExit(f'WASM native-only state test: expected one match, found {count}')
+          wasm.write_text(updated, encoding='utf-8')
 
           swift = Path('clients/swift/Tests/ZedClientTests/ZedClientTests.swift')
           source = swift.read_text(encoding='utf-8')
-          pattern = re.compile(
+          swift_pattern = re.compile(
               r'    func testRejectsHostileSegmentsBeforeTransport\(\) async throws \{.*?\n    func testAuthenticatedOperationsRequireTokenBeforeTransport\(\) async throws \{',
               re.DOTALL,
           )
-          replacement = '''    func testRejectsHostileSegmentsBeforeTransport() async throws {
+          swift_replacement = '''    func testRejectsHostileSegmentsBeforeTransport() async throws {
               let client = try makeClient()
               for value in ["", "   ", ".", "..", "line\\nbreak"] {
                   do {
@@ -118,7 +116,7 @@ jobs:
           }
 
           func testAuthenticatedOperationsRequireTokenBeforeTransport() async throws {'''
-          updated, count = pattern.subn(replacement, source, count=1)
+          updated, count = swift_pattern.subn(swift_replacement, source, count=1)
           if count != 1:
               raise SystemExit(f'Swift inserted hardening test block: expected one match, found {count}')
           swift.write_text(updated, encoding='utf-8')
