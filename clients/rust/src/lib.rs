@@ -65,6 +65,25 @@ fn checked_segment(segment: &str, name: &str) -> Result<String> {
     Ok(encode_segment(segment))
 }
 
+fn validate_path_segments(raw_path: &str, name: &str) -> Result<()> {
+    for (index, encoded) in raw_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .enumerate()
+    {
+        let decoded = percent_decode_str(encoded)
+            .decode_utf8()
+            .map_err(|_| invalid_input(format!("{name} contains invalid percent encoding")))?;
+        validate_segment(&decoded, &format!("{name} segment {}", index + 1))?;
+        if decoded.contains('/') || decoded.contains('\\') {
+            return Err(invalid_input(format!(
+                "{name} segments must not contain encoded separators"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_raw_base_path(raw: &str) -> Result<()> {
     let scheme_end = raw.find("://").ok_or(Error::InvalidBaseUrl)?;
     let authority_start = scheme_end + 3;
@@ -75,20 +94,13 @@ fn validate_raw_base_path(raw: &str) -> Result<()> {
     let path_end = raw[path_start..]
         .find(['?', '#'])
         .map_or(raw.len(), |offset| path_start + offset);
-    for (index, encoded) in raw[path_start..path_end].split('/').enumerate() {
-        if encoded.is_empty() {
-            continue;
-        }
-        let decoded = percent_decode_str(encoded)
-            .decode_utf8()
-            .map_err(|_| Error::InvalidBaseUrl)?;
-        validate_segment(&decoded, &format!("registry path segment {}", index + 1))
-            .map_err(|_| Error::InvalidBaseUrl)?;
-        if decoded.contains('/') || decoded.contains('\\') {
-            return Err(Error::InvalidBaseUrl);
-        }
-    }
-    Ok(())
+    validate_path_segments(&raw[path_start..path_end], "registry path")
+        .map_err(|_| Error::InvalidBaseUrl)
+}
+
+fn validate_relative_download_path(raw: &str) -> Result<()> {
+    let path_end = raw.find(['?', '#']).unwrap_or(raw.len());
+    validate_path_segments(&raw[..path_end], "download URL")
 }
 
 fn download_limit(size: u64) -> u64 {
@@ -115,6 +127,8 @@ pub enum Error {
     InvalidInput(String),
     #[error("authenticated registry operation requires a nonblank bearer token")]
     MissingToken,
+    #[error("{what} exceeded {limit} bytes")]
+    ResponseTooLarge { what: String, limit: u64 },
     #[error("artifact exceeded {limit} bytes")]
     ArtifactTooLarge { limit: u64 },
     #[error("http error: {0}")]
@@ -193,7 +207,11 @@ impl Client {
     }
 
     fn require_token(&self) -> Result<&str> {
-        self.token.as_deref().ok_or(Error::MissingToken)
+        let token = self.token.as_deref().ok_or(Error::MissingToken)?;
+        if token.chars().any(char::is_control) {
+            return Err(invalid_input("token must not contain control characters"));
+        }
+        Ok(token)
     }
 
     fn url(&self, path: &str) -> String {
@@ -205,7 +223,10 @@ impl Client {
         limit: u64,
         what: &str,
     ) -> Result<Vec<u8>> {
-        let too_large = || Error::Other(format!("{what} exceeded {limit} bytes; refusing"));
+        let too_large = || Error::ResponseTooLarge {
+            what: what.to_string(),
+            limit,
+        };
         if response.content_length().is_some_and(|length| length > limit) {
             return Err(too_large());
         }
@@ -227,13 +248,14 @@ impl Client {
         let limit = self.max_response_bytes.min(MAX_ERROR_BODY_BYTES);
         let body = match Self::read_capped(response, limit, "registry error body") {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(error) => {
+            Err(Error::ResponseTooLarge { .. }) => {
                 return Err(Error::Api {
                     status,
                     code: format!("http_{status}"),
-                    message: format!("<bounded error body unavailable: {error}>"),
+                    message: "registry error body exceeded the client limit".to_string(),
                 });
             }
+            Err(error) => return Err(error),
         };
         match serde_json::from_str::<ApiError>(&body) {
             Ok(error) => {
@@ -374,6 +396,7 @@ impl Client {
         if let Ok(absolute) = reqwest::Url::parse(trimmed) {
             return self.allowed_download_url(absolute.as_str());
         }
+        validate_relative_download_path(trimmed)?;
         let base = reqwest::Url::parse(&(self.base.clone() + "/"))
             .map_err(|_| Error::InvalidBaseUrl)?;
         let resolved = base
@@ -420,8 +443,13 @@ impl Client {
         // download_url may be a third-party presigned URL.
         let response = self.check(self.http.get(url).send()?)?;
         let limit = download_limit(version.size);
-        let bytes = Self::read_capped(response, limit, "artifact")
-            .map_err(|_| Error::ArtifactTooLarge { limit })?;
+        let bytes = match Self::read_capped(response, limit, "artifact") {
+            Ok(bytes) => bytes,
+            Err(Error::ResponseTooLarge { .. }) => {
+                return Err(Error::ArtifactTooLarge { limit });
+            }
+            Err(error) => return Err(error),
+        };
         verify_sha256(&bytes, &version.sha256)?;
         Self::write_atomic(dest, &bytes)
     }
@@ -561,6 +589,14 @@ mod tests {
             client.restore("acme", "kit", "1.2.0"),
             Err(Error::MissingToken)
         ));
+
+        let unsafe_token = Client::new("http://127.0.0.1:9")
+            .unwrap()
+            .with_token("token\r\nheader");
+        assert!(matches!(
+            unsafe_token.claim_org("acme"),
+            Err(Error::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -582,7 +618,7 @@ mod tests {
 
     #[test]
     fn download_policy_and_limits() {
-        let client = Client::new("https://registry.zpkg.tech").unwrap();
+        let client = Client::new("https://registry.zpkg.tech/gateway").unwrap();
         assert_eq!(download_limit(0), MAX_ARTIFACT_BYTES);
         assert_eq!(download_limit(10), 10 + DOWNLOAD_SLACK);
         for raw in ["http://evil.example/artifact", "file:///etc/passwd"] {
@@ -592,6 +628,18 @@ mod tests {
             .allowed_download_url("http://127.0.0.1:8080/a")
             .is_ok());
         assert!(client.allowed_download_url("https://cdn.example/a").is_ok());
+        assert!(client.resolve_download_url("../escape", "abc").is_err());
+        assert!(client
+            .resolve_download_url("%2e%2e/escape", "abc")
+            .is_err());
+        assert!(client.resolve_download_url("a%2Fb", "abc").is_err());
+        assert_eq!(
+            client
+                .resolve_download_url("artifacts/hash", "abc")
+                .unwrap()
+                .as_str(),
+            "https://registry.zpkg.tech/gateway/artifacts/hash"
+        );
     }
 }
 
