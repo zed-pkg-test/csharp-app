@@ -232,7 +232,10 @@ impl Client {
             what: what.to_string(),
             limit,
         };
-        if response.content_length().is_some_and(|length| length > limit) {
+        if response
+            .content_length()
+            .is_some_and(|length| length > limit)
+        {
             return Err(too_large());
         }
         let mut bytes = Vec::new();
@@ -402,8 +405,8 @@ impl Client {
             return self.allowed_download_url(absolute.as_str());
         }
         validate_relative_download_path(trimmed)?;
-        let base = reqwest::Url::parse(&(self.base.clone() + "/"))
-            .map_err(|_| Error::InvalidBaseUrl)?;
+        let base =
+            reqwest::Url::parse(&(self.base.clone() + "/")).map_err(|_| Error::InvalidBaseUrl)?;
         let resolved = base
             .join(trimmed)
             .map_err(|_| Error::Other("relative download URL is invalid".to_string()))?;
@@ -421,10 +424,7 @@ impl Client {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let temporary = parent.join(format!(
-            ".{name}.zed-{}-{nonce}.tmp",
-            std::process::id()
-        ));
+        let temporary = parent.join(format!(".{name}.zed-{}-{nonce}.tmp", std::process::id()));
         let result = (|| -> Result<()> {
             let mut file = OpenOptions::new()
                 .write(true)
@@ -728,12 +728,17 @@ mod download_tests {
         let metadata = version("artifact", &sha.to_uppercase(), body.len() as u64);
         client.download_artifact(&metadata, &destination).unwrap();
         let request = receiver.recv().unwrap();
-        assert!(request.starts_with("GET /gateway/artifact "), "request={request}");
+        assert!(
+            request.starts_with("GET /gateway/artifact "),
+            "request={request}"
+        );
         assert!(!request.to_lowercase().contains("authorization"));
         assert_eq!(fs::read(&destination).unwrap(), body);
-        assert!(fs::read_dir(&directory)
+        assert!(fs::read_dir(&directory).unwrap().all(|entry| !entry
             .unwrap()
-            .all(|entry| !entry.unwrap().file_name().to_string_lossy().contains(".zed-")));
+            .file_name()
+            .to_string_lossy()
+            .contains(".zed-")));
         let _ = fs::remove_dir_all(&directory);
     }
 
@@ -746,7 +751,9 @@ mod download_tests {
         let directory = std::env::temp_dir().join(format!("zed-dl-big-{}", std::process::id()));
         let destination = directory.join("artifact.tar.gz");
         let metadata = version(&format!("{base}/artifact"), "deadbeef", 1);
-        let error = client.download_artifact(&metadata, &destination).unwrap_err();
+        let error = client
+            .download_artifact(&metadata, &destination)
+            .unwrap_err();
         assert!(matches!(error, Error::ArtifactTooLarge { .. }));
         let _ = fs::remove_dir_all(&directory);
     }
