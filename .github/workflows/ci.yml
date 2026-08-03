@@ -1,168 +1,209 @@
 name: ci
 
 on:
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: zed-clients-repair-${{ github.ref }}
+  group: zed-clients-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  repair-exact-head-tests:
-    if: github.actor != 'github-actions[bot]'
+  contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.head_ref }}
-          persist-credentials: true
-          show-progress: false
-
-      - name: Replace malformed generated tests by token boundaries
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - name: Validate the ten-language Zed target matrix
         run: |
           python3 - <<'PY'
-          from pathlib import Path
+          import pathlib
+          import tomllib
 
-          def function_end(source: str, opening_brace: int) -> int:
-              depth = 0
-              in_string = False
-              escaped = False
-              for index in range(opening_brace, len(source)):
-                  char = source[index]
-                  if in_string:
-                      if escaped:
-                          escaped = False
-                      elif char == '\\':
-                          escaped = True
-                      elif char == '"':
-                          in_string = False
-                      continue
-                  if char == '"':
-                      in_string = True
-                  elif char == '{':
-                      depth += 1
-                  elif char == '}':
-                      depth -= 1
-                      if depth == 0:
-                          return index + 1
-              raise SystemExit('unterminated function body')
+          root = pathlib.Path.cwd()
+          with (root / ".zpkg.toml").open("rb") as handle:
+              manifest = tomllib.load(handle)
+          with (root / ".zpkg.lock").open("rb") as handle:
+              lock = tomllib.load(handle)
+          assert lock["version"] == 1
 
-          wasm = Path('clients/wasm/src/lib.rs')
-          source = wasm.read_text(encoding='utf-8')
-          token = 'fn missing_token_and_invalid_constructor_state_fail_before_transport() {'
-          start = source.index(token)
-          line_start = source.rfind('\n', 0, start) + 1
-          body_end = function_end(source, source.index('{', start))
-          replacement = '''    fn missing_token_and_invalid_constructor_state_fail_before_transport() {
-              let client = ZedClient::new(Some("relative/path".to_string()));
-              assert!(client.configuration_error.is_some());
-
-              let mut client = ZedClient::new(Some("https://registry.test".to_string()));
-              assert!(client.token.is_none());
-              client.with_token("   ".to_string());
-              assert!(client.token.is_none());
-          }'''
-          wasm.write_text(
-              source[:line_start] + replacement + source[body_end:],
-              encoding='utf-8',
-          )
-
-          swift = Path('clients/swift/Tests/ZedClientTests/ZedClientTests.swift')
-          source = swift.read_text(encoding='utf-8')
-          start_token = 'func testRejectsHostileSegmentsBeforeTransport() async throws {'
-          end_token = 'func testAuthenticatedOperationsRequireTokenBeforeTransport() async throws {'
-          start = source.index(start_token)
-          line_start = source.rfind('\n', 0, start) + 1
-          end = source.index(end_token, start)
-          end_after = end + len(end_token)
-          replacement = '''    func testRejectsHostileSegmentsBeforeTransport() async throws {
-              let client = try makeClient()
-              let hostileValues = [
-                  "",
-                  "   ",
-                  ".",
-                  "..",
-                  String(UnicodeScalar(10)!),
-              ]
-              for value in hostileValues {
-                  do {
-                      _ = try await client.getPackage(org: value, name: "kit")
-                      XCTFail("expected segment rejection for \\(value.debugDescription)")
-                  } catch let error as ZedClientError {
-                      guard case .invalidConfiguration = error else {
-                          return XCTFail("unexpected error: \\(error)")
-                      }
-                  }
-              }
+          required = {
+              "nodejs": ("clients/typescript", "package.json"),
+              "python": ("clients/python", "pyproject.toml"),
+              "golang": ("clients/go", "go.mod"),
+              "rust": ("clients/rust", "Cargo.toml"),
+              "rust-wasm": ("clients/wasm", "Cargo.toml"),
+              "dart": ("clients/dart", "pubspec.yaml"),
+              "gleam": ("clients/gleam", "gleam.toml"),
+              "erlang": ("clients/erlang", "rebar.config"),
+              "java": ("clients/java", "pom.xml"),
+              "swift": ("clients/swift", "Package.swift"),
           }
-
-          func testRelativeDownloadURLPreservesGatewayAndUppercaseDigest() async throws {
-              let artifact = Data("abc".utf8)
-              let recorder = RequestRecorder()
-              StubURLProtocol.handler = { request in
-                  recorder.append(request)
-                  return StubResponse(status: 200, body: artifact)
-              }
-              let client = try makeClient(basePath: "/gateway")
-              let version = VersionMetadata(
-                  org: "acme",
-                  name: "kit",
-                  version: "1.0.0",
-                  sha256: "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD",
-                  size: Int64(artifact.count),
-                  format: "tar.gz",
-                  vcsTag: "v1.0.0",
-                  vcsCommit: nil,
-                  downloadURL: "artifacts/hash",
-                  publishedAt: "now",
-                  yanked: false
+          targets = manifest["targets"]
+          for target, (directory, native_manifest) in required.items():
+              assert targets[target]["dir"] == directory, (target, targets[target])
+              assert (root / directory / native_manifest).is_file(), (
+                  target,
+                  native_manifest,
               )
-              let downloaded = try await client.downloadArtifact(version)
-              XCTAssertEqual(downloaded, artifact)
-              XCTAssertEqual(
-                  recorder.snapshot().first?.url?.path,
-                  "/gateway/artifacts/hash"
-              )
-          }
-
-          func testBlankStructuredErrorCodeFallsBackToHTTPStatus() async throws {
-              StubURLProtocol.handler = { _ in
-                  StubResponse(
-                      status: 409,
-                      body: Data(#"{"code":"   ","message":"remote detail"}"#.utf8)
-                  )
-              }
-              let client = try makeClient(token: "token")
-              do {
-                  _ = try await client.claimOrg(slug: "acme")
-                  XCTFail("expected API error")
-              } catch let error as ZedClientError {
-                  guard case let .api(status, code, _) = error else {
-                      return XCTFail("unexpected error: \\(error)")
-                  }
-                  XCTAssertEqual(status, 409)
-                  XCTAssertEqual(code, "http_409")
-              }
-          }
-
-          func testAuthenticatedOperationsRequireTokenBeforeTransport() async throws {'''
-          swift.write_text(
-              source[:line_start] + replacement + source[end_after:],
-              encoding='utf-8',
-          )
+          assert targets["repository"]["dir"] == "."
+          assert targets["golang"]["native"]["package"].endswith("/clients/go")
+          assert targets["golang"]["native"]["tag_format"] == "clients/go/v{version}"
+          assert targets["java"]["native"]["package"] == "tech.zpkg:zed-client"
+          print("zed-clients ten-language matrix is complete")
           PY
-          rustfmt --edition 2021 clients/wasm/src/lib.rs
-          git diff --check
 
-      - name: Commit and push the asserted test fixes
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add clients/wasm/src/lib.rs clients/swift/Tests/ZedClientTests/ZedClientTests.swift
-          git commit -m 'DEN-1403 normalize WASM and Swift hardening tests'
-          git push origin HEAD:${{ github.head_ref }}
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: zed-clients
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+      - run: cargo test
+        working-directory: zed-clients/clients/rust
+
+  wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: zed-clients
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - run: cargo test
+        working-directory: zed-clients/clients/wasm
+      - run: cargo check --target wasm32-unknown-unknown
+        working-directory: zed-clients/clients/wasm
+
+  typescript:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - run: npm install && npm run build && npm test
+        working-directory: clients/typescript
+
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - run: python -m compileall -q zed_pkg_client && python -m unittest -v
+        working-directory: clients/python
+
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: "1.22"
+          cache-dependency-path: clients/go/go.mod
+      - run: go vet ./... && go test ./...
+        working-directory: clients/go
+
+  dart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260
+        with:
+          sdk: stable
+      - run: dart pub get && dart analyze && dart test
+        working-directory: clients/dart
+
+  gleam:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93
+        with:
+          otp-version: "27"
+          gleam-version: "1.16"
+          rebar3-version: "3"
+      - run: gleam test
+        working-directory: clients/gleam
+
+  erlang:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93
+        with:
+          otp-version: "27"
+          rebar3-version: "3"
+      - run: rebar3 compile && rebar3 eunit
+        working-directory: clients/erlang
+
+  java:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: java -version
+      - run: mvn --batch-mode --no-transfer-progress verify
+        working-directory: clients/java
+
+  swift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: swift --version
+      - run: swift test --parallel
+        working-directory: clients/swift
