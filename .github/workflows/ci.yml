@@ -23,41 +23,73 @@ jobs:
           persist-credentials: true
           show-progress: false
 
-      - name: Correct browser-native and XCTest-only test mechanics
+      - name: Replace malformed generated tests by token boundaries
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
+
+          def function_end(source: str, opening_brace: int) -> int:
+              depth = 0
+              in_string = False
+              escaped = False
+              for index in range(opening_brace, len(source)):
+                  char = source[index]
+                  if in_string:
+                      if escaped:
+                          escaped = False
+                      elif char == '\\':
+                          escaped = True
+                      elif char == '"':
+                          in_string = False
+                      continue
+                  if char == '"':
+                      in_string = True
+                  elif char == '{':
+                      depth += 1
+                  elif char == '}':
+                      depth -= 1
+                      if depth == 0:
+                          return index + 1
+              raise SystemExit('unterminated function body')
 
           wasm = Path('clients/wasm/src/lib.rs')
           source = wasm.read_text(encoding='utf-8')
-          wasm_pattern = re.compile(
-              r'    fn missing_token_and_invalid_constructor_state_fail_before_transport\(\) \{.*?\n    \}\n\}',
-              re.DOTALL,
-          )
-          wasm_replacement = '''    fn missing_token_and_invalid_constructor_state_fail_before_transport() {
+          token = 'fn missing_token_and_invalid_constructor_state_fail_before_transport() {'
+          start = source.index(token)
+          line_start = source.rfind('\n', 0, start) + 1
+          body_end = function_end(source, source.index('{', start))
+          replacement = '''    fn missing_token_and_invalid_constructor_state_fail_before_transport() {
               let client = ZedClient::new(Some("relative/path".to_string()));
               assert!(client.configuration_error.is_some());
+
               let mut client = ZedClient::new(Some("https://registry.test".to_string()));
               assert!(client.token.is_none());
               client.with_token("   ".to_string());
               assert!(client.token.is_none());
-          }
           }'''
-          updated, count = wasm_pattern.subn(wasm_replacement, source, count=1)
-          if count != 1:
-              raise SystemExit(f'WASM native-only state test: expected one match, found {count}')
-          wasm.write_text(updated, encoding='utf-8')
+          wasm.write_text(
+              source[:line_start] + replacement + source[body_end:],
+              encoding='utf-8',
+          )
 
           swift = Path('clients/swift/Tests/ZedClientTests/ZedClientTests.swift')
           source = swift.read_text(encoding='utf-8')
-          swift_pattern = re.compile(
-              r'    func testRejectsHostileSegmentsBeforeTransport\(\) async throws \{.*?\n    func testAuthenticatedOperationsRequireTokenBeforeTransport\(\) async throws \{',
-              re.DOTALL,
-          )
-          swift_replacement = '''    func testRejectsHostileSegmentsBeforeTransport() async throws {
+          start_token = 'func testRejectsHostileSegmentsBeforeTransport() async throws {'
+          end_token = 'func testAuthenticatedOperationsRequireTokenBeforeTransport() async throws {'
+          start = source.index(start_token)
+          line_start = source.rfind('\n', 0, start) + 1
+          end = source.index(end_token, start)
+          end_after = end + len(end_token)
+          replacement = '''    func testRejectsHostileSegmentsBeforeTransport() async throws {
               let client = try makeClient()
-              for value in ["", "   ", ".", "..", "line\\nbreak"] {
+              let hostileValues = [
+                  "",
+                  "   ",
+                  ".",
+                  "..",
+                  String(UnicodeScalar(10)!),
+              ]
+              for value in hostileValues {
                   do {
                       _ = try await client.getPackage(org: value, name: "kit")
                       XCTFail("expected segment rejection for \\(value.debugDescription)")
@@ -92,7 +124,10 @@ jobs:
               )
               let downloaded = try await client.downloadArtifact(version)
               XCTAssertEqual(downloaded, artifact)
-              XCTAssertEqual(recorder.snapshot().first?.url?.path, "/gateway/artifacts/hash")
+              XCTAssertEqual(
+                  recorder.snapshot().first?.url?.path,
+                  "/gateway/artifacts/hash"
+              )
           }
 
           func testBlankStructuredErrorCodeFallsBackToHTTPStatus() async throws {
@@ -116,11 +151,12 @@ jobs:
           }
 
           func testAuthenticatedOperationsRequireTokenBeforeTransport() async throws {'''
-          updated, count = swift_pattern.subn(swift_replacement, source, count=1)
-          if count != 1:
-              raise SystemExit(f'Swift inserted hardening test block: expected one match, found {count}')
-          swift.write_text(updated, encoding='utf-8')
+          swift.write_text(
+              source[:line_start] + replacement + source[end_after:],
+              encoding='utf-8',
+          )
           PY
+          rustfmt --edition 2021 clients/wasm/src/lib.rs
           git diff --check
 
       - name: Commit and push the asserted test fixes
@@ -128,5 +164,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add clients/wasm/src/lib.rs clients/swift/Tests/ZedClientTests/ZedClientTests.swift
-          git commit -m 'DEN-1403 fix exact-head WASM and Swift test mechanics'
+          git commit -m 'DEN-1403 normalize WASM and Swift hardening tests'
           git push origin HEAD:${{ github.head_ref }}
