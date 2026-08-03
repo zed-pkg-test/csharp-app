@@ -11,7 +11,6 @@ import gleam/http/response.{type Response}
 import gleam/httpc
 import gleam/int
 import gleam/json
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -670,9 +669,15 @@ pub fn multipart_body(
 }
 
 fn publish_coordinate_decoder() -> decode.Decoder(#(String, String, String)) {
-  use org <- decode.at(["manifest", "package", "org"], decode.string)
-  use name <- decode.at(["manifest", "package", "name"], decode.string)
-  use version <- decode.at(["manifest", "package", "version"], decode.string)
+  use org <- decode.then(
+    decode.at(["manifest", "package", "org"], decode.string),
+  )
+  use name <- decode.then(
+    decode.at(["manifest", "package", "name"], decode.string),
+  )
+  use version <- decode.then(
+    decode.at(["manifest", "package", "version"], decode.string),
+  )
   decode.success(#(org, name, version))
 }
 
