@@ -27,95 +27,81 @@ jobs:
           show-progress: false
           fetch-depth: 0
 
-      - name: Apply exact fail-closed source and test corrections
+      - name: Apply function-boundary Erlang corrections
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          def replace_once(path: Path, old: str, new: str, label: str) -> None:
+          def sub_once(path: Path, pattern: str, replacement: str, label: str) -> None:
               source = path.read_text(encoding='utf-8')
-              count = source.count(old)
+              updated, count = re.subn(
+                  pattern,
+                  lambda _match: replacement,
+                  source,
+                  count=1,
+                  flags=re.DOTALL,
+              )
               if count != 1:
                   raise SystemExit(f'{label}: expected one match, found {count}')
-              path.write_text(source.replace(old, new, 1), encoding='utf-8')
+              path.write_text(updated, encoding='utf-8')
 
           source = Path('clients/erlang/src/zed_pkg_client.erl')
-          replace_once(
-              source,
-              '''-define(MAX_ERROR_BODY_BYTES, 16384).
-          -define(MAX_PATH_SEGMENT_BYTES, 256).
-          ''',
-              '''-define(MAX_ERROR_BODY_BYTES, 16384).
-          -define(MAX_PATH_SEGMENT_BYTES, 256).
-          -define(MAX_TOKEN_BYTES, 8192).
-          ''',
-              'token ceiling constant',
+          text = source.read_text(encoding='utf-8')
+          marker = '-define(MAX_PATH_SEGMENT_BYTES, 256).\n'
+          if text.count(marker) != 1:
+              raise SystemExit(f'token ceiling marker: expected one match, found {text.count(marker)}')
+          source.write_text(
+              text.replace(marker, marker + '-define(MAX_TOKEN_BYTES, 8192).\n', 1),
+              encoding='utf-8',
           )
-          replace_once(
+
+          sub_once(
               source,
-              '''%% containing control characters are retained as an error so auth fails before
-          %% transport instead of creating an unsafe header.
-          with_token(Client, Token) when is_map(Client) ->
-              case normalize_token(Token) of
-                  {ok, Normalized} -> Client#{token => Normalized, token_error => undefined};
-                  {error, Reason} -> Client#{token => undefined, token_error => Reason}
-              end.
-          ''',
-              '''%% containing control characters or exceeding the credential ceiling are retained
-          %% as an error so auth fails before transport instead of creating an unsafe header.
-          with_token(Client, Token) when is_map(Client) ->
+              r'with_token\(Client, Token\) when is_map\(Client\) ->.*?\n\s*end\.',
+              '''with_token(Client, Token) when is_map(Client) ->
               case normalize_token(Token) of
                   {ok, Normalized} -> Client#{token => Normalized, token_error => undefined};
                   {error, Reason} -> Client#{token => undefined, token_error => Reason}
               end;
           with_token(_Client, _Token) ->
-              {error, {invalid_configuration, <<"client must be a map returned by new/1">>}}.
-          ''',
-              'with_token invalid-client handling',
+              {error, {invalid_configuration, <<"client must be a map returned by new/1">>}}.''',
+              'with_token clauses',
           )
-          replace_once(
+
+          sub_once(
               source,
-              '''        _ ->
-                  case has_control(Token) of
-                      true -> {error, {invalid_input, <<"token must not contain control characters">>}};
-                      false -> {ok, Token}
-                  end
-          ''',
-              '''        _ ->
-                  case byte_size(Token) > ?MAX_TOKEN_BYTES of
-                      true ->
-                          {error,
-                              {invalid_input,
-                                  <<"token must not exceed 8192 UTF-8 bytes">>}};
-                      false ->
-                          case has_control(Token) of
-                              true ->
-                                  {error,
-                                      {invalid_input,
-                                          <<"token must not contain control characters">>}};
-                              false -> {ok, Token}
-                          end
-                  end
-          ''',
-              'token length and control validation',
-          )
-          replace_once(
-              source,
-              '''auth_headers(Client, true) ->
-              case maps:get(token_error, Client, undefined) of
-                  undefined ->
-                      case maps:get(token, Client, undefined) of
-                          undefined ->
+              r'normalize_token\(undefined\) ->.*?\n\nvalidate_base\(Value\) ->',
+              '''normalize_token(undefined) ->
+              {ok, undefined};
+          normalize_token(Value) when is_binary(Value); is_list(Value); is_atom(Value) ->
+              Token = trim_binary(text(Value)),
+              case Token of
+                  <<>> ->
+                      {ok, undefined};
+                  _ when byte_size(Token) > ?MAX_TOKEN_BYTES ->
+                      {error,
+                          {invalid_input,
+                              <<"token must not exceed 8192 UTF-8 bytes">>}};
+                  _ ->
+                      case has_control(Token) of
+                          true ->
                               {error,
-                                  {missing_token,
-                                      <<"authenticated registry operation requires a nonblank bearer token">>}};
-                          Token -> {ok, [{"authorization", "Bearer " ++ binary_to_list(Token)}]}
-                      end;
-                  TokenError -> {error, TokenError}
+                                  {invalid_input,
+                                      <<"token must not contain control characters">>}};
+                          false -> {ok, Token}
+                      end
               end;
-          auth_headers(_Client, false) ->
-              {ok, []}.
-          ''',
+          normalize_token(_) ->
+              {error, {invalid_input, <<"token must be text">>}}.
+
+          validate_base(Value) ->''',
+              'normalize_token function',
+          )
+
+          sub_once(
+              source,
+              r'auth_headers\(Client, true\) ->.*?auth_headers\(_Client, false\) ->\n\s*\{ok, \[\]\}\.',
               '''auth_headers(Client, true) when is_map(Client) ->
               case maps:get(token_error, Client, undefined) of
                   undefined ->
@@ -136,30 +122,59 @@ jobs:
           auth_headers(_Client, true) ->
               {error, {invalid_configuration, <<"client must be a map returned by new/1">>}};
           auth_headers(_Client, false) ->
-              {ok, []}.
-          ''',
-              'per-operation token revalidation',
+              {ok, []}.''',
+              'auth_headers function',
           )
 
           tests = Path('clients/erlang/test/zed_pkg_client_hardening_tests.erl')
-          replace_once(
-              tests,
-              '''-define(MAX_ERROR_BODY_BYTES, 16384).
-          ''',
-              '''-define(MAX_ERROR_BODY_BYTES, 16384).
-          -define(MAX_TOKEN_BYTES, 8192).
-          ''',
-              'test token ceiling constant',
+          test_text = tests.read_text(encoding='utf-8')
+          test_marker = '-define(MAX_ERROR_BODY_BYTES, 16384).\n'
+          if test_text.count(test_marker) != 1:
+              raise SystemExit(
+                  f'test token ceiling marker: expected one match, found {test_text.count(test_marker)}'
+              )
+          tests.write_text(
+              test_text.replace(
+                  test_marker,
+                  test_marker + '-define(MAX_TOKEN_BYTES, 8192).\n',
+                  1,
+              ),
+              encoding='utf-8',
           )
-          replace_once(
+
+          sub_once(
               tests,
-              '''    UnsafeToken = zed_pkg_client:with_token(Client, <<"token\\r\\nheader">>),
+              r'hostile_segments_and_missing_tokens_fail_before_transport_test\(\) ->.*?\n\nartifact_url_policy_rejects_credentials_fragments_and_unsupported_schemes_test\(\) ->',
+              '''hostile_segments_and_missing_tokens_fail_before_transport_test() ->
+              {ok, Client} = zed_pkg_client:new("http://127.0.0.1:9"),
+              lists:foreach(
+                  fun(Value) ->
+                      ?assertMatch(
+                          {error, {invalid_input, _}},
+                          zed_pkg_client:get_package(Client, Value, "kit")
+                      )
+                  end,
+                  [<<>>, <<"   ">>, <<".">>, <<"..">>, <<"line\\nbreak">>]
+              ),
+              Overlong = binary:copy(<<"x">>, 257),
               ?assertMatch(
                   {error, {invalid_input, _}},
-                  zed_pkg_client:claim_org(UnsafeToken, "acme")
-              ).
-          ''',
-              '''    UnsafeToken = zed_pkg_client:with_token(Client, <<"token\\r\\nheader">>),
+                  zed_pkg_client:get_version(Client, "acme", "kit", Overlong)
+              ),
+              ?assertMatch(
+                  {error, {missing_token, _}},
+                  zed_pkg_client:claim_org(Client, "acme")
+              ),
+              ?assertMatch(
+                  {error, {missing_token, _}},
+                  zed_pkg_client:restore(Client, "acme", "kit", "1.2.0")
+              ),
+              Meta = <<"{\\"manifest\\":{\\"package\\":{\\"org\\":\\"acme\\",\\"name\\":\\"kit\\",\\"version\\":\\"1.2.0\\"}}}">>,
+              ?assertMatch(
+                  {error, {missing_token, _}},
+                  zed_pkg_client:publish(Client, "acme", "kit", "1.2.0", Meta, <<"bytes">>)
+              ),
+              UnsafeToken = zed_pkg_client:with_token(Client, <<"token\\r\\nheader">>),
               ?assertMatch(
                   {error, {invalid_input, _}},
                   zed_pkg_client:claim_org(UnsafeToken, "acme")
@@ -173,29 +188,42 @@ jobs:
                   {error, {invalid_input, _}},
                   zed_pkg_client:claim_org(OverlongClient, "acme")
               ),
-              MutatedClient = Client#{
+              MutatedControlClient = Client#{
                   token => <<"token\\r\\nheader">>,
                   token_error => undefined
               },
               ?assertMatch(
                   {error, {invalid_input, _}},
-                  zed_pkg_client:restore(MutatedClient, "acme", "kit", "1.2.0")
+                  zed_pkg_client:restore(MutatedControlClient, "acme", "kit", "1.2.0")
+              ),
+              MutatedTypeClient = Client#{token => 42, token_error => undefined},
+              ?assertMatch(
+                  {error, {invalid_input, _}},
+                  zed_pkg_client:claim_org(MutatedTypeClient, "acme")
               ),
               ?assertMatch(
                   {error, {invalid_configuration, _}},
-                  zed_pkg_client:publish(not_a_client, "acme", "kit", "1.2.0", Meta, <<"bytes">>)
+                  zed_pkg_client:publish(
+                      not_a_client,
+                      "acme",
+                      "kit",
+                      "1.2.0",
+                      Meta,
+                      <<"bytes">>
+                  )
               ),
               ?assertMatch(
                   {error, {invalid_configuration, _}},
                   zed_pkg_client:with_token(not_a_client, <<"token">>)
               ).
-          ''',
-              'token mutation and boundary regressions',
+
+          artifact_url_policy_rejects_credentials_fragments_and_unsupported_schemes_test() ->''',
+              'hardening test function',
           )
           PY
           git diff --check
 
-      - name: Restore permanent CI and remove the inert patch workflow
+      - name: Restore permanent CI and remove patch-only workflow files
         run: |
           git fetch origin main --depth=1
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
