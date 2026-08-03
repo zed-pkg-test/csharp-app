@@ -6,6 +6,7 @@ name: WASM browser transport contract
       - '.github/workflows/wasm-browser-contract.yml'
       - 'tests/browser/wasm_transport_contract.mjs'
       - 'tests/browser/wasm_fixture_csp_shim.mjs'
+      - 'tests/browser/wasm_expected_diagnostics_shim.mjs'
       - 'clients/wasm/**'
   push:
     branches: [main]
@@ -13,6 +14,7 @@ name: WASM browser transport contract
       - '.github/workflows/wasm-browser-contract.yml'
       - 'tests/browser/wasm_transport_contract.mjs'
       - 'tests/browser/wasm_fixture_csp_shim.mjs'
+      - 'tests/browser/wasm_expected_diagnostics_shim.mjs'
       - 'clients/wasm/**'
   schedule:
     - cron: '37 8 * * 3'
@@ -112,6 +114,7 @@ jobs:
           ./node_modules/.bin/playwright install --with-deps '${{ matrix.engine }}'
           node --check wasm_transport_contract.mjs
           node --check wasm_fixture_csp_shim.mjs
+          node --check wasm_expected_diagnostics_shim.mjs
 
       - name: Exercise hostile transport boundaries in a real browser
         shell: bash
@@ -119,7 +122,9 @@ jobs:
         env:
           ZED_WASM_PKG: ${{ github.workspace }}/zed-clients/clients/wasm/pkg
           BROWSER_ARTIFACT_DIR: ${{ runner.temp }}/wasm-transport/${{ matrix.engine }}
-          NODE_OPTIONS: --import=${{ github.workspace }}/zed-clients/tests/browser/wasm_fixture_csp_shim.mjs
+          NODE_OPTIONS: >-
+            --import=${{ github.workspace }}/zed-clients/tests/browser/wasm_fixture_csp_shim.mjs
+            --import=${{ github.workspace }}/zed-clients/tests/browser/wasm_expected_diagnostics_shim.mjs
         run: node --test --test-reporter=spec wasm_transport_contract.mjs
 
       - name: Verify candidate source remained clean
