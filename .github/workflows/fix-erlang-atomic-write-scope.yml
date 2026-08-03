@@ -1,0 +1,56 @@
+name: fix Erlang atomic-write scope
+
+on:
+  push:
+    branches:
+      - alexanderdmills/den-1403-erlang-client-hardening
+    paths:
+      - .github/workflows/fix-erlang-atomic-write-scope.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: alexanderdmills/den-1403-erlang-client-hardening
+          persist-credentials: true
+          show-progress: false
+
+      - name: Correct the unsafe outer case variable and remove this workflow
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('clients/erlang/src/zed_pkg_client.erl')
+          source = path.read_text(encoding='utf-8')
+          old = '''                        WriteError ->
+              _ = file:delete(Temp),
+              WriteError
+          end;
+          '''
+          new = '''                        WriteFailure ->
+              _ = file:delete(Temp),
+              WriteFailure
+          end;
+          '''
+          count = source.count(old)
+          if count != 1:
+              raise SystemExit(f'outer write failure clause: expected one match, found {count}')
+          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          PY
+          git rm .github/workflows/fix-erlang-atomic-write-scope.yml
+          git diff --check
+
+      - name: Commit and push
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add clients/erlang/src/zed_pkg_client.erl
+          git commit -m 'DEN-1403 fix Erlang atomic-write error scope'
+          git push origin HEAD:alexanderdmills/den-1403-erlang-client-hardening
