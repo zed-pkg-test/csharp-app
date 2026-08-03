@@ -99,6 +99,11 @@ fn validate_raw_base_path(raw: &str) -> Result<()> {
 }
 
 fn validate_relative_download_path(raw: &str) -> Result<()> {
+    if raw.starts_with('/') || raw.starts_with('\\') {
+        return Err(invalid_input(
+            "relative download URL must not replace the registry authority or gateway path",
+        ));
+    }
     let path_end = raw.find(['?', '#']).unwrap_or(raw.len());
     validate_path_segments(&raw[..path_end], "download URL")
 }
@@ -628,11 +633,19 @@ mod tests {
             .allowed_download_url("http://127.0.0.1:8080/a")
             .is_ok());
         assert!(client.allowed_download_url("https://cdn.example/a").is_ok());
-        assert!(client.resolve_download_url("../escape", "abc").is_err());
-        assert!(client
-            .resolve_download_url("%2e%2e/escape", "abc")
-            .is_err());
-        assert!(client.resolve_download_url("a%2Fb", "abc").is_err());
+        for invalid in [
+            "../escape",
+            "%2e%2e/escape",
+            "a%2Fb",
+            "//evil.example/artifact",
+            "/absolute/artifact",
+            "\\authority-replacement",
+        ] {
+            assert!(
+                client.resolve_download_url(invalid, "abc").is_err(),
+                "accepted {invalid}"
+            );
+        }
         assert_eq!(
             client
                 .resolve_download_url("artifacts/hash", "abc")
