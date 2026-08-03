@@ -246,13 +246,15 @@ class ZedClient:
 
     def _allowed_download_url(self, raw: str) -> str:
         parsed = urllib.parse.urlsplit(raw)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.fragment
-        ):
+        if parsed.username is not None or parsed.password is not None or parsed.fragment:
+            raise ZedApiError(0, "bad_download_url", "download URL is invalid")
+        if parsed.scheme not in {"http", "https"}:
+            raise ZedApiError(
+                0,
+                "insecure_download_url",
+                f"refusing download over {parsed.scheme!r}",
+            )
+        if not parsed.hostname:
             raise ZedApiError(0, "bad_download_url", "download URL is invalid")
         loopback = _is_loopback_host(parsed.hostname)
         if parsed.scheme == "https":

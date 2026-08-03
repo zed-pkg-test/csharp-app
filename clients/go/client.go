@@ -277,7 +277,16 @@ func (c *Client) requireToken() (string, error) {
 
 func (c *Client) allowedDownloadURL(raw string) (string, error) {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.User != nil || parsed.Fragment != "" || parsed.Hostname() == "" {
+	if err != nil || parsed.User != nil || parsed.Fragment != "" {
+		return "", &APIError{Code: "bad_download_url", Message: "download URL is invalid"}
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", &APIError{
+			Code:    "insecure_download_url",
+			Message: fmt.Sprintf("refusing artifact download over %q", parsed.Scheme),
+		}
+	}
+	if parsed.Hostname() == "" {
 		return "", &APIError{Code: "bad_download_url", Message: "download URL is invalid"}
 	}
 	host := parsed.Hostname()

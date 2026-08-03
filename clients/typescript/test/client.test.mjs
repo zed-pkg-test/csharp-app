@@ -60,7 +60,11 @@ test("complete structured errors preserve their stable registry code", async () 
   const remote = "provider-secret";
   const fakeFetch = async () =>
     new Response(JSON.stringify({ code: "org_taken", message: remote }), { status: 409 });
-  const client = new ZedClient({ registryUrl: "https://x.test///", fetchImpl: fakeFetch });
+  const client = new ZedClient({
+    registryUrl: "https://x.test///",
+    token: "token",
+    fetchImpl: fakeFetch,
+  });
   await assert.rejects(
     () => client.claimOrg("acme"),
     (error) => {
@@ -79,7 +83,11 @@ test("truncated JSON errors fall back to a stable HTTP-derived code", async () =
   const remote = "provider-secret".repeat(MAX_ERROR_BODY_BYTES);
   const fakeFetch = async () =>
     new Response(JSON.stringify({ code: "org_taken", message: remote }), { status: 409 });
-  const client = new ZedClient({ registryUrl: "https://x.test///", fetchImpl: fakeFetch });
+  const client = new ZedClient({
+    registryUrl: "https://x.test///",
+    token: "token",
+    fetchImpl: fakeFetch,
+  });
   await assert.rejects(
     () => client.claimOrg("acme"),
     (error) => {

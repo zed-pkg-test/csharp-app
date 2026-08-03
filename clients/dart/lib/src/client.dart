@@ -69,8 +69,40 @@ String artifactPath(String sha256) =>
 String yankPath(String org, String name, String version) =>
     '${versionPath(org, name, version)}/yank';
 
+void _validateRawRegistryPath(String raw) {
+  final schemeEnd = raw.indexOf('://');
+  if (schemeEnd < 0) return;
+  final authorityStart = schemeEnd + 3;
+  final pathStart = raw.indexOf('/', authorityStart);
+  if (pathStart < 0) return;
+  var pathEnd = raw.length;
+  for (final marker in ['?', '#']) {
+    final index = raw.indexOf(marker, pathStart);
+    if (index >= 0 && index < pathEnd) pathEnd = index;
+  }
+  final rawPath = raw.substring(pathStart, pathEnd);
+  final segments = rawPath.split('/');
+  for (var index = 0; index < segments.length; index += 1) {
+    final encoded = segments[index];
+    if (encoded.isEmpty) continue;
+    final String decoded;
+    try {
+      decoded = Uri.decodeComponent(encoded);
+    } on FormatException {
+      throw ArgumentError.value(
+          raw, 'registryUrl', 'contains invalid percent encoding');
+    }
+    _requireText(decoded, 'registry path segment ${index + 1}');
+    if (decoded.contains('/') || decoded.contains('\\')) {
+      throw ArgumentError.value(
+          raw, 'registryUrl', 'path segments must not contain encoded separators');
+    }
+  }
+}
+
 String normalizeRegistryUrl(String raw) {
   final trimmed = raw.trim();
+  _validateRawRegistryPath(trimmed);
   final uri = Uri.tryParse(trimmed);
   if (uri == null ||
       !uri.hasScheme ||
@@ -232,7 +264,9 @@ final class ZedClient {
     required String overflowCode,
     required String description,
   }) async {
-    final declared = response.contentLength;
+    final declared =
+        int.tryParse(response.headers['content-length'] ?? '') ??
+            response.contentLength;
     if (declared != null && declared > limit && failOnOverflow) {
       throw ZedApiError(
           0, overflowCode, '$description exceeded $limit bytes; refusing');
