@@ -37,7 +37,10 @@ func TestHostileSegmentsFailBeforeTransport(t *testing.T) {
 		{"blank", func() error { _, err := client.GetPackage("", "kit"); return err }},
 		{"dot", func() error { _, err := client.GetVersion("acme", "kit", ".."); return err }},
 		{"control", func() error { _, err := client.ClaimOrg("line\nbreak"); return err }},
-		{"overlong", func() error { _, err := client.GetPackage(strings.Repeat("x", maxPathSegmentBytes+1), "kit"); return err }},
+		{"overlong", func() error {
+			_, err := client.GetPackage(strings.Repeat("x", maxPathSegmentBytes+1), "kit")
+			return err
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := test.run(); err == nil {
@@ -79,7 +82,10 @@ func TestAuthenticatedOperationsRequireTokenBeforeTransport(t *testing.T) {
 		func() error { _, err := client.ClaimOrg("acme"); return err },
 		func() error { _, err := client.SetYanked("acme", "kit", "1.2.0", true); return err },
 		func() error { _, err := client.Restore("acme", "kit", "1.2.0"); return err },
-		func() error { _, err := client.Publish("acme", "kit", "1.2.0", meta, filepath.Join(t.TempDir(), "missing")); return err },
+		func() error {
+			_, err := client.Publish("acme", "kit", "1.2.0", meta, filepath.Join(t.TempDir(), "missing"))
+			return err
+		},
 	}
 	for index, operation := range operations {
 		var apiErr *APIError
