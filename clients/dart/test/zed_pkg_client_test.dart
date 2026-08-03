@@ -58,7 +58,6 @@ void main() {
         'http://127.0.0.1:8080/a');
     expect(client.allowedDownloadUrl('http://localhost/a', base),
         'http://localhost/a');
-    // An http registry base opts in to plaintext downloads.
     expect(
         client.allowedDownloadUrl(
             'http://mirror.internal/a', 'http://registry.internal'),
@@ -93,7 +92,7 @@ void main() {
     expect(pkg.versionScheme, 'calver');
   });
 
-  test('api errors carry the registry code', () async {
+  test('api errors carry the registry code without leaking by default', () async {
     final mock = MockClient((request) async => http.Response(
         jsonEncode({'code': 'org_taken', 'message': 'claimed'}), 409));
     final zed = ZedClient(httpClient: mock, token: 'zpkg_t');
@@ -104,19 +103,21 @@ void main() {
       expect(error.status, 409);
       expect(error.code, 'org_taken');
       expect(error.message, 'claimed');
+      expect(error.registryMessage, 'claimed');
+      expect(error.toString(), 'registry error 409: org_taken');
     }
   });
 
-  test('non-JSON error bodies map to unknown', () async {
-    final mock =
-        MockClient((request) async => http.Response('boom', 500));
+  test('non-JSON error bodies map to the HTTP-derived code', () async {
+    final mock = MockClient((request) async => http.Response('boom', 500));
     final zed = ZedClient(httpClient: mock);
     try {
       await zed.getVersion('acme', 'kit', '1.2.0');
       fail('expected ZedApiError');
     } on ZedApiError catch (error) {
-      expect(error.code, 'unknown');
+      expect(error.code, 'http_500');
       expect(error.message, 'boom');
+      expect(error.toString(), 'registry error 500: http_500');
     }
   });
 

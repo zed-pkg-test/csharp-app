@@ -10,7 +10,7 @@ import type {
 
 export const DEFAULT_REGISTRY_URL = "https://registry.zpkg.tech";
 
-/** Bounds every request (connect + read), in milliseconds. */
+/** Bounds every request, including streamed response-body consumption. */
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** Successful JSON documents are never allowed to grow without bound. */
@@ -19,12 +19,16 @@ export const MAX_JSON_RESPONSE_BYTES = 16 * 1024 * 1024;
 /** Remote error text is retained only through this bounded explicit field. */
 export const MAX_ERROR_BODY_BYTES = 16 * 1024;
 
+/** Maximum UTF-8 size of one opaque registry route segment. */
+export const MAX_PATH_SEGMENT_BYTES = 256;
+
 /**
  * Hard ceiling on artifact downloads, matching the server's MAX_ARTIFACT_BYTES
  * default (100 MiB); plus the slack added to a version's declared size.
  */
 export const MAX_ARTIFACT_BYTES = 100 * 1024 * 1024;
 const DOWNLOAD_SLACK = 1024 * 1024;
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
 
 /** The declared size (when sane) plus slack, capped by the ceiling. */
 function downloadLimit(size: number): number {
@@ -143,6 +147,23 @@ export function normalizeRegistryUrl(raw: string): string {
   return url.toString().replace(/\/$/, "");
 }
 
+/** Validate one opaque path segment before URL construction. */
+export function encodePathSegment(value: string, name = "path segment"): string {
+  const size = new TextEncoder().encode(value).byteLength;
+  if (
+    value.trim() === "" ||
+    value === "." ||
+    value === ".." ||
+    size > MAX_PATH_SEGMENT_BYTES ||
+    CONTROL_CHARACTER.test(value)
+  ) {
+    throw new TypeError(
+      `${name} must be nonblank, at most ${MAX_PATH_SEGMENT_BYTES} UTF-8 bytes, and must not be a dot segment or contain control characters`,
+    );
+  }
+  return encodeURIComponent(value);
+}
+
 /**
  * Enforce the download-url scheme policy: https is always allowed; http only
  * for loopback hosts or when the registry base is itself http. Userinfo is
@@ -174,11 +195,11 @@ export function allowedDownloadUrl(raw: string, base: string): string {
 }
 
 export function packagePath(org: string, name: string): string {
-  return `/v1/packages/${encodeURIComponent(org)}/${encodeURIComponent(name)}`;
+  return `/v1/packages/${encodePathSegment(org, "org")}/${encodePathSegment(name, "name")}`;
 }
 
 export function versionPath(org: string, name: string, version: string): string {
-  return `/v1/packages/${encodeURIComponent(org)}/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}`;
+  return `${packagePath(org, name)}/versions/${encodePathSegment(version, "version")}`;
 }
 
 export function yankPath(org: string, name: string, version: string): string {
@@ -186,12 +207,15 @@ export function yankPath(org: string, name: string, version: string): string {
 }
 
 export function artifactPath(sha256: string): string {
-  return `/v1/artifacts/${encodeURIComponent(sha256)}`;
+  return `/v1/artifacts/${encodePathSegment(sha256, "sha256")}`;
 }
 
 export function filePath(org: string, name: string, version: string, path: string): string {
-  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-  return `/v1/files/${encodeURIComponent(org)}/${encodeURIComponent(name)}/${encodeURIComponent(version)}/${encodedPath}`;
+  const encodedPath = path
+    .split("/")
+    .map((segment, index) => encodePathSegment(segment, `path segment ${index + 1}`))
+    .join("/");
+  return `/v1/files/${encodePathSegment(org, "org")}/${encodePathSegment(name, "name")}/${encodePathSegment(version, "version")}/${encodedPath}`;
 }
 
 export class ZedClient {
@@ -210,6 +234,17 @@ export class ZedClient {
     }
   }
 
+  private requireToken(): string {
+    if (!this.token) {
+      throw new ZedApiError(
+        0,
+        "missing_token",
+        "authenticated registry operation requires a nonblank bearer token",
+      );
+    }
+    return this.token;
+  }
+
   private async request<T>(
     path: string,
     init: RequestInit = {},
@@ -217,51 +252,51 @@ export class ZedClient {
   ): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("accept", "application/json");
-    if (authorized && this.token) headers.set("authorization", `Bearer ${this.token}`);
+    if (authorized) headers.set("authorization", `Bearer ${this.requireToken()}`);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let response: Response;
     try {
-      response = await this.fetchImpl(`${this.base}${path}`, {
+      const response = await this.fetchImpl(`${this.base}${path}`, {
         ...init,
         headers,
         redirect: "error",
         signal: controller.signal,
       });
+
+      if (!response.ok) {
+        const bounded = await readAtMost(response, MAX_ERROR_BODY_BYTES);
+        const text = new TextDecoder().decode(bounded.bytes);
+        let body: ApiErrorBody = {
+          code: `http_${response.status}`,
+          message: text,
+        };
+        try {
+          const parsed = JSON.parse(text) as Partial<ApiErrorBody> | null;
+          const parsedCode = typeof parsed?.code === "string" ? parsed.code.trim() : "";
+          body = {
+            code: parsedCode || `http_${response.status}`,
+            message: typeof parsed?.message === "string" ? parsed.message : text,
+          };
+        } catch {
+          // Non-JSON error body remains available only through registryMessage.
+        }
+        if (bounded.truncated) body.message += "…";
+        throw new ZedApiError(response.status, body.code, body.message);
+      }
+
+      const bytes = await readCapped(
+        response,
+        MAX_JSON_RESPONSE_BYTES,
+        "response_too_large",
+        "registry JSON response",
+      );
+      try {
+        return JSON.parse(new TextDecoder().decode(bytes)) as T;
+      } catch (error) {
+        throw new ZedApiError(0, "invalid_response", `invalid registry JSON: ${String(error)}`);
+      }
     } finally {
       clearTimeout(timer);
-    }
-
-    if (!response.ok) {
-      const bounded = await readAtMost(response, MAX_ERROR_BODY_BYTES);
-      const text = new TextDecoder().decode(bounded.bytes);
-      let body: ApiErrorBody = {
-        code: `http_${response.status}`,
-        message: text,
-      };
-      try {
-        const parsed = JSON.parse(text) as Partial<ApiErrorBody> | null;
-        body = {
-          code: typeof parsed?.code === "string" ? parsed.code : `http_${response.status}`,
-          message: typeof parsed?.message === "string" ? parsed.message : text,
-        };
-      } catch {
-        // Non-JSON error body remains available only through registryMessage.
-      }
-      if (bounded.truncated) body.message += "…";
-      throw new ZedApiError(response.status, body.code, body.message);
-    }
-
-    const bytes = await readCapped(
-      response,
-      MAX_JSON_RESPONSE_BYTES,
-      "response_too_large",
-      "registry JSON response",
-    );
-    try {
-      return JSON.parse(new TextDecoder().decode(bytes)) as T;
-    } catch (error) {
-      throw new ZedApiError(0, "invalid_response", `invalid registry JSON: ${String(error)}`);
     }
   }
 
@@ -278,18 +313,19 @@ export class ZedClient {
   }
 
   claimOrg(slug: string): Promise<ClaimOrgResponse> {
+    const checkedSlug = encodePathSegment(slug, "slug");
     return this.request(
       "/v1/orgs",
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ slug }),
+        body: JSON.stringify({ slug: decodeURIComponent(checkedSlug) }),
       },
       true,
     );
   }
 
-  yank(org: string, name: string, version: string, yanked: boolean): Promise<YankResponse> {
+  setYanked(org: string, name: string, version: string, yanked: boolean): Promise<YankResponse> {
     return this.request(
       yankPath(org, name, version),
       {
@@ -299,6 +335,15 @@ export class ZedClient {
       },
       true,
     );
+  }
+
+  /** Compatibility form: omitting `yanked` means yank the version. */
+  yank(org: string, name: string, version: string, yanked = true): Promise<YankResponse> {
+    return this.setYanked(org, name, version, yanked);
+  }
+
+  restore(org: string, name: string, version: string): Promise<YankResponse> {
+    return this.setYanked(org, name, version, false);
   }
 
   /** Download an artifact and verify its sha256 (WebCrypto). */
@@ -316,34 +361,33 @@ export class ZedClient {
     const limit = downloadLimit(version.size);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let response: Response;
     try {
       // Deliberately no auth header: download_url may point at a third-party
       // host (e.g. a presigned S3/R2 URL), and the token must not leak there.
-      response = await this.fetchImpl(url, {
+      const response = await this.fetchImpl(url, {
         redirect: "error",
         signal: controller.signal,
       });
+      if (!response.ok) {
+        const bounded = await readAtMost(response, MAX_ERROR_BODY_BYTES);
+        throw new ZedApiError(
+          response.status,
+          "download_failed",
+          new TextDecoder().decode(bounded.bytes),
+        );
+      }
+      const bytes = await readCapped(response, limit, "artifact_too_large", "artifact");
+      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      const actual = [...new Uint8Array(digest)]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+      if (actual !== version.sha256) {
+        throw new ZedApiError(0, "sha256_mismatch", `expected ${version.sha256}, got ${actual}`);
+      }
+      return bytes;
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) {
-      const bounded = await readAtMost(response, MAX_ERROR_BODY_BYTES);
-      throw new ZedApiError(
-        response.status,
-        "download_failed",
-        new TextDecoder().decode(bounded.bytes),
-      );
-    }
-    const bytes = await readCapped(response, limit, "artifact_too_large", "artifact");
-    const digest = await crypto.subtle.digest("SHA-256", bytes);
-    const actual = [...new Uint8Array(digest)]
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
-    if (actual !== version.sha256) {
-      throw new ZedApiError(0, "sha256_mismatch", `expected ${version.sha256}, got ${actual}`);
-    }
-    return bytes;
   }
 
   /** Publish: multipart meta (PublishMeta JSON) + artifact bytes. */
@@ -354,12 +398,24 @@ export class ZedClient {
     >,
     artifact: Blob,
   ): Promise<PublishResponse> {
+    if (artifact.size > MAX_ARTIFACT_BYTES) {
+      throw new ZedApiError(
+        0,
+        "artifact_too_large",
+        `artifact exceeded ${MAX_ARTIFACT_BYTES} bytes; refusing`,
+      );
+    }
     const pkg = meta.manifest.package;
+    const org = decodeURIComponent(encodePathSegment(pkg.org, "meta.manifest.package.org"));
+    const name = decodeURIComponent(encodePathSegment(pkg.name, "meta.manifest.package.name"));
+    const version = decodeURIComponent(
+      encodePathSegment(pkg.version, "meta.manifest.package.version"),
+    );
     const form = new FormData();
     form.set("meta", JSON.stringify(meta));
-    form.set("artifact", artifact, `${pkg.org}-${pkg.name}-${pkg.version}.tar.gz`);
+    form.set("artifact", artifact, `${org}-${name}-${version}.tar.gz`);
     return this.request(
-      versionPath(pkg.org, pkg.name, pkg.version),
+      versionPath(org, name, version),
       {
         method: "PUT",
         body: form,
