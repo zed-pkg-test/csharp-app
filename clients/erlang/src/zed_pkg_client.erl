@@ -108,7 +108,7 @@ validate_base(Value) ->
                 true ->
                     case validate_path(maps:get(path, Parsed, <<>>), <<"registry URL path">>) of
                         ok -> {ok, trim_trailing_slashes(Base)};
-                        Error -> Error
+                        PathError -> PathError
                     end;
                 false ->
                     {error,
@@ -207,7 +207,7 @@ validate_path_segments([Encoded | Rest], Name, Index) ->
                     SegmentName = <<Name/binary, " segment ", (integer_to_binary(Index))/binary>>,
                     case validate_segment(Decoded, SegmentName) of
                         {ok, _} -> validate_path_segments(Rest, Name, Index + 1);
-                        Error -> Error
+                        SegmentError -> SegmentError
                     end
             end
     catch
@@ -219,9 +219,9 @@ checked_package_path(Org, Name) ->
         {ok, CheckedOrg} ->
             case validate_segment(Name, <<"name">>) of
                 {ok, CheckedName} -> {ok, package_path(CheckedOrg, CheckedName)};
-                Error -> Error
+                NameError -> NameError
             end;
-        Error -> Error
+        OrgError -> OrgError
     end.
 
 checked_version_path(Org, Name, Version) ->
@@ -230,15 +230,15 @@ checked_version_path(Org, Name, Version) ->
             case validate_segment(Version, <<"version">>) of
                 {ok, CheckedVersion} ->
                     {ok, <<PackagePath/binary, "/versions/", (encode_segment(CheckedVersion))/binary>>};
-                Error -> Error
+                VersionError -> VersionError
             end;
-        Error -> Error
+        PackageError -> PackageError
     end.
 
 checked_yank_path(Org, Name, Version) ->
     case checked_version_path(Org, Name, Version) of
         {ok, Path} -> {ok, <<Path/binary, "/yank">>};
-        Error -> Error
+        VersionPathError -> VersionPathError
     end.
 
 %%--------------------------------------------------------------------
@@ -316,7 +316,7 @@ resolve_download_url(DownloadUrl0, Base, Sha256) ->
         <<>> ->
             case validate_segment(Sha256, <<"sha256">>) of
                 {ok, CheckedSha} -> {ok, <<Base/binary, (artifact_path(CheckedSha))/binary>>};
-                Error -> Error
+                ShaError -> ShaError
             end;
         _ ->
             try uri_string:parse(DownloadUrl) of
@@ -332,7 +332,7 @@ resolve_download_url(DownloadUrl0, Base, Sha256) ->
                                 true ->
                                     case validate_path(maps:get(path, Parsed, <<>>), <<"download_url">>) of
                                         ok -> allowed_download_url(<<Base/binary, "/", DownloadUrl/binary>>, Base);
-                                        Error -> Error
+                                        RelativePathError -> RelativePathError
                                     end;
                                 false ->
                                     {error,
@@ -367,13 +367,13 @@ verify_sha256(Bytes, Expected) ->
 get_package(Client, Org, Name) ->
     case checked_package_path(Org, Name) of
         {ok, Path} -> request_json(Client, get, Path, undefined, false);
-        Error -> Error
+        PathError -> PathError
     end.
 
 get_version(Client, Org, Name, Version) ->
     case checked_version_path(Org, Name, Version) of
         {ok, Path} -> request_json(Client, get, Path, undefined, false);
-        Error -> Error
+        PathError -> PathError
     end.
 
 search(Client, Query) ->
@@ -384,14 +384,14 @@ claim_org(Client, Slug) ->
     case validate_segment(Slug, <<"slug">>) of
         {ok, CheckedSlug} ->
             request_json(Client, post, <<"/v1/orgs">>, #{<<"slug">> => CheckedSlug}, true);
-        Error -> Error
+        SlugError -> SlugError
     end.
 
 set_yanked(Client, Org, Name, Version, Yanked) when is_boolean(Yanked) ->
     case checked_yank_path(Org, Name, Version) of
         {ok, Path} ->
             request_json(Client, post, Path, #{<<"yanked">> => Yanked}, true);
-        Error -> Error
+        PathError -> PathError
     end;
 set_yanked(_Client, _Org, _Name, _Version, _Yanked) ->
     {error, {invalid_input, <<"yanked must be a boolean">>}}.
@@ -420,16 +420,16 @@ download_artifact(Client, Version) when is_map(Version) ->
                                 false ->
                                     case verify_sha256(Body, Sha256) of
                                         ok -> {ok, Body};
-                                        Error -> Error
+                                        VerifyError -> VerifyError
                                     end
                             end;
                         {ok, Status, Body} ->
                             {error, decode_api_error(Status, Body)};
-                        Error -> Error
+                        RequestError -> RequestError
                     end;
-                Error -> Error
+                UrlError -> UrlError
             end;
-        Error -> Error
+        BaseError -> BaseError
     end;
 download_artifact(_Client, _Version) ->
     {error, {invalid_input, <<"version metadata must be a map">>}}.
@@ -440,7 +440,7 @@ download_artifact(_Client, _Version) ->
 download_artifact(Client, Version, DestPath) ->
     case download_artifact(Client, Version) of
         {ok, Body} -> write_file_atomic(DestPath, Body);
-        Error -> Error
+        DownloadError -> DownloadError
     end.
 
 write_file_atomic(DestPath0, Body) ->
@@ -453,34 +453,33 @@ write_file_atomic(DestPath0, Body) ->
             Temp = filename:join(Dir, "." ++ BaseName ++ ".zed-" ++ Nonce ++ ".tmp"),
             case file:open(Temp, [write, binary, raw, exclusive]) of
                 {ok, Handle} ->
-                    Result =
+                    WriteResult =
                         case file:write(Handle, Body) of
-                            ok ->
-                                case file:sync(Handle) of
-                                    ok -> ok;
-                                    Error -> Error
-                                end;
-                            Error -> Error
+                            ok -> file:sync(Handle);
+                            WriteError -> WriteError
                         end,
                     CloseResult = file:close(Handle),
-                    case {Result, CloseResult} of
-                        {ok, ok} ->
-                            case file:rename(Temp, DestPath) of
-                                ok -> ok;
-                                Error ->
+                    case WriteResult of
+                        ok ->
+                            case CloseResult of
+                                ok ->
+                                    case file:rename(Temp, DestPath) of
+                                        ok -> ok;
+                                        RenameError ->
+                                            _ = file:delete(Temp),
+                                            RenameError
+                                    end;
+                                CloseError ->
                                     _ = file:delete(Temp),
-                                    Error
+                                    CloseError
                             end;
-                        {Error, _} ->
+                        WriteError ->
                             _ = file:delete(Temp),
-                            Error;
-                        {ok, Error} ->
-                            _ = file:delete(Temp),
-                            Error
+                            WriteError
                     end;
-                Error -> Error
+                OpenError -> OpenError
             end;
-        Error -> Error
+        EnsureError -> EnsureError
     end.
 
 publish(Client, Org, Name, Version, MetaJson, Artifact) when is_binary(Artifact) ->
@@ -492,49 +491,61 @@ publish(Client, Org, Name, Version, MetaJson, Artifact) when is_binary(Artifact)
                         true ->
                             {error, {artifact_too_large, ?MAX_ARTIFACT_BYTES}};
                         false ->
+                            ExpectedOrg = text(Org),
+                            ExpectedName = text(Name),
+                            ExpectedVersion = text(Version),
                             case decode_publish_coordinate(MetaJson) of
-                                {ok, {MetaOrg, MetaName, MetaVersion}}
-                                when MetaOrg =:= text(Org),
-                                     MetaName =:= text(Name),
-                                     MetaVersion =:= text(Version) ->
-                                    case client_base(Client) of
-                                        {ok, Base} ->
-                                            Boundary =
-                                                <<"zedpkg",
-                                                    (binary:encode_hex(
-                                                        crypto:strong_rand_bytes(16), lowercase
-                                                    ))/binary>>,
-                                            Body = multipart_body(
-                                                Boundary,
-                                                text(MetaJson),
-                                                <<"artifact.tar.gz">>,
-                                                Artifact
-                                            ),
-                                            ContentType =
-                                                <<"multipart/form-data; boundary=", Boundary/binary>>,
-                                            Url = <<Base/binary, Path/binary>>,
-                                            case http_request(
-                                                Client, put, Url, Headers, {ContentType, Body}
-                                            ) of
-                                                {ok, Status, ResponseBody}
-                                                when Status >= 200, Status < 300 ->
-                                                    decode_success_json(ResponseBody);
-                                                {ok, Status, ResponseBody} ->
-                                                    {error, decode_api_error(Status, ResponseBody)};
-                                                Error -> Error
+                                {ok, {MetaOrg, MetaName, MetaVersion}} ->
+                                    case {
+                                        MetaOrg =:= ExpectedOrg,
+                                        MetaName =:= ExpectedName,
+                                        MetaVersion =:= ExpectedVersion
+                                    } of
+                                        {true, true, true} ->
+                                            case client_base(Client) of
+                                                {ok, Base} ->
+                                                    Boundary =
+                                                        <<"zedpkg",
+                                                            (binary:encode_hex(
+                                                                crypto:strong_rand_bytes(16), lowercase
+                                                            ))/binary>>,
+                                                    Body = multipart_body(
+                                                        Boundary,
+                                                        text(MetaJson),
+                                                        <<"artifact.tar.gz">>,
+                                                        Artifact
+                                                    ),
+                                                    ContentType =
+                                                        <<"multipart/form-data; boundary=", Boundary/binary>>,
+                                                    Url = <<Base/binary, Path/binary>>,
+                                                    case http_request(
+                                                        Client,
+                                                        put,
+                                                        Url,
+                                                        Headers,
+                                                        {ContentType, Body}
+                                                    ) of
+                                                        {ok, Status, ResponseBody}
+                                                        when Status >= 200, Status < 300 ->
+                                                            decode_success_json(ResponseBody);
+                                                        {ok, Status, ResponseBody} ->
+                                                            {error,
+                                                                decode_api_error(Status, ResponseBody)};
+                                                        RequestError -> RequestError
+                                                    end;
+                                                BaseError -> BaseError
                                             end;
-                                        Error -> Error
+                                        _ ->
+                                            {error,
+                                                {invalid_input,
+                                                    <<"publish route and meta.manifest.package coordinates differ">>}}
                                     end;
-                                {ok, _} ->
-                                    {error,
-                                        {invalid_input,
-                                            <<"publish route and meta.manifest.package coordinates differ">>}};
-                                Error -> Error
+                                DecodeError -> DecodeError
                             end
                     end;
-                Error -> Error
+                PathError -> PathError
             end;
-        Error -> Error
+        AuthError -> AuthError
     end;
 publish(_Client, _Org, _Name, _Version, _MetaJson, _Artifact) ->
     {error, {invalid_input, <<"artifact must be a binary">>}}.
@@ -550,9 +561,7 @@ decode_publish_coordinate(MetaJson) ->
                 }
             }
         } ->
-            case
-                validate_segment(Org, <<"meta.manifest.package.org">>)
-            of
+            case validate_segment(Org, <<"meta.manifest.package.org">>) of
                 {ok, CheckedOrg} ->
                     case validate_segment(Name, <<"meta.manifest.package.name">>) of
                         {ok, CheckedName} ->
@@ -561,11 +570,11 @@ decode_publish_coordinate(MetaJson) ->
                             ) of
                                 {ok, CheckedVersion} ->
                                     {ok, {CheckedOrg, CheckedName, CheckedVersion}};
-                                Error -> Error
+                                VersionError -> VersionError
                             end;
-                        Error -> Error
+                        NameError -> NameError
                     end;
-                Error -> Error
+                OrgError -> OrgError
             end;
         _ ->
             {error, {invalid_input, <<"meta.manifest.package is required">>}}
@@ -605,11 +614,11 @@ request_json(Client, Method, Path, Body, Authorized) ->
                             decode_success_json(ResponseBody);
                         {ok, Status, ResponseBody} ->
                             {error, decode_api_error(Status, ResponseBody)};
-                        Error -> Error
+                        RequestError -> RequestError
                     end;
-                Error -> Error
+                AuthError -> AuthError
             end;
-        Error -> Error
+        BaseError -> BaseError
     end.
 
 auth_headers(Client, true) ->
@@ -622,7 +631,7 @@ auth_headers(Client, true) ->
                             <<"authenticated registry operation requires a nonblank bearer token">>}};
                 Token -> {ok, [{"authorization", "Bearer " ++ binary_to_list(Token)}]}
             end;
-        Error -> {error, Error}
+        TokenError -> {error, TokenError}
     end;
 auth_headers(_Client, false) ->
     {ok, []}.
@@ -630,7 +639,8 @@ auth_headers(_Client, false) ->
 http_request(Client, Method, Url, Headers0, Payload) ->
     case client_timeout(Client) of
         {ok, Timeout} ->
-            _ = application:ensure_all_started([inets, ssl]),
+            _ = application:ensure_all_started(inets),
+            _ = application:ensure_all_started(ssl),
             Headers = [{"accept", "application/json"} | Headers0],
             Request =
                 case Payload of
@@ -651,7 +661,7 @@ http_request(Client, Method, Url, Headers0, Payload) ->
                 {error, Reason} ->
                     {error, {transport, Reason}}
             end;
-        Error -> Error
+        TimeoutError -> TimeoutError
     end.
 
 %%--------------------------------------------------------------------
