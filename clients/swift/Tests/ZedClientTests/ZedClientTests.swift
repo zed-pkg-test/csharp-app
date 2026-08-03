@@ -26,7 +26,10 @@ final class ZedClientTests: XCTestCase {
             "https://user:secret@registry.example",
             "https://registry.example?tenant=one",
             "https://registry.example#fragment",
-        ] {
+        "https://registry.example/../admin",
+        "https://registry.example/%2e%2e/admin",
+        "https://registry.example/a%2Fb",
+    ] {
             XCTAssertThrowsError(try ZedClient(registryURL: invalid), invalid)
         }
     }
@@ -261,6 +264,65 @@ final class ZedClientTests: XCTestCase {
             XCTAssertFalse(error.errorDescription?.contains("provider-secret") == true)
         }
     }
+
+    func testRejectsHostileSegmentsBeforeTransport() async throws {
+    let client = try makeClient()
+    for value in ["", "   ", ".", "..", "line\nbreak"] {
+        do {
+            _ = try await client.getPackage(org: value, name: "kit")
+            XCTFail("expected segment rejection for \(value.debugDescription)")
+        } catch let error as ZedClientError {
+            guard case .invalidConfiguration = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+    }
+}
+
+func testRelativeDownloadURLPreservesGatewayAndUppercaseDigest() async throws {
+    let artifact = Data("abc".utf8)
+    let recorder = RequestRecorder()
+    StubURLProtocol.handler = { request in
+        recorder.append(request)
+        return StubResponse(status: 200, body: artifact)
+    }
+    let client = try makeClient(basePath: "/gateway")
+    let version = VersionMetadata(
+        org: "acme",
+        name: "kit",
+        version: "1.0.0",
+        sha256: "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD",
+        size: Int64(artifact.count),
+        format: "tar.gz",
+        vcsTag: "v1.0.0",
+        vcsCommit: nil,
+        downloadURL: "artifacts/hash",
+        publishedAt: "now",
+        yanked: false
+    )
+    XCTAssertEqual(try await client.downloadArtifact(version), artifact)
+    XCTAssertEqual(recorder.snapshot().first?.url?.path, "/gateway/artifacts/hash")
+}
+
+func testBlankStructuredErrorCodeFallsBackToHTTPStatus() async throws {
+    StubURLProtocol.handler = { _ in
+        StubResponse(
+            status: 409,
+            body: Data(#"{"code":"   ","message":"remote detail"}"#.utf8)
+        )
+    }
+    let client = try makeClient(token: "token")
+    do {
+        _ = try await client.claimOrg(slug: "acme")
+        XCTFail("expected API error")
+    } catch let error as ZedClientError {
+        guard case let .api(status, code, _) = error else {
+            return XCTFail("unexpected error: \(error)")
+        }
+        XCTAssertEqual(status, 409)
+        XCTAssertEqual(code, "http_409")
+    }
+}
 
     func testAuthenticatedOperationsRequireTokenBeforeTransport() async throws {
         let client = try makeClient(token: nil)
