@@ -47,6 +47,46 @@ final class ZedClientHardeningTest {
                 ZedClient.MissingTokenException.class,
                 () -> client.publish(JSON.createObjectNode(), new byte[] {1})
         );
+
+        ZedClient unsafeToken = new ZedClient(
+                "http://127.0.0.1:9",
+                "token\r\nInjected: header"
+        );
+        assertThrows(
+                ZedClient.ValidationException.class,
+                () -> unsafeToken.claimOrg("acme")
+        );
+    }
+
+    @Test
+    void relativeArtifactTraversalAndAuthorityReplacementFailBeforeTransport() {
+        ZedClient client = new ZedClient("https://registry.example/gateway", null);
+        for (String raw : new String[] {
+                "../escape",
+                "%2e%2e/escape",
+                "a%2Fb",
+                "//evil.example/artifact",
+                "/absolute/artifact"
+        }) {
+            ZedClient.VersionMetadata version = new ZedClient.VersionMetadata(
+                    "acme",
+                    "kit",
+                    "1.0.0",
+                    "00",
+                    1,
+                    "tar.gz",
+                    "v1.0.0",
+                    null,
+                    raw,
+                    "now",
+                    false
+            );
+            assertThrows(
+                    ZedClient.ValidationException.class,
+                    () -> client.downloadArtifact(version),
+                    raw
+            );
+        }
     }
 
     @Test
