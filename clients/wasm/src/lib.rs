@@ -6,10 +6,14 @@ use js_sys::{Array, Function, Reflect, Uint8Array};
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{Blob, BlobPropertyBag, FormData, Request, RequestInit, RequestRedirect, Response};
+use web_sys::{
+    AbortController, Blob, BlobPropertyBag, FormData, Request, RequestInit, RequestRedirect,
+    Response,
+};
 use zed_interfaces::registry::{
     self, ApiError, ClaimOrgResponse, PackageMetadata, PublishResponse, SearchResponse,
     VersionMetadata, YankResponse, DEFAULT_REGISTRY_URL,
@@ -26,6 +30,7 @@ const DOWNLOAD_SLACK: u64 = 1024 * 1024;
 const MAX_JSON_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES: u64 = 16 * 1024;
 const MAX_SEGMENT_BYTES: usize = 256;
+const DEFAULT_TIMEOUT_MS: u32 = 30_000;
 
 fn validate_segment<'a>(segment: &'a str, name: &str) -> Result<&'a str, String> {
     if segment.trim().is_empty() {
@@ -227,6 +232,28 @@ fn global_fetch(request: &Request) -> Result<js_sys::Promise, JsValue> {
         .map_err(JsValue::from)
 }
 
+fn schedule_abort(controller: AbortController, timeout_ms: u32) -> Result<JsValue, JsValue> {
+    let global = js_sys::global();
+    let set_timeout: Function = Reflect::get(&global, &JsValue::from_str("setTimeout"))?
+        .dyn_into()
+        .map_err(|_| js_error("global setTimeout is unavailable in this runtime"))?;
+    let callback = Closure::once_into_js(move || controller.abort());
+    set_timeout.call2(
+        &global,
+        &callback,
+        &JsValue::from_f64(f64::from(timeout_ms)),
+    )
+}
+
+fn clear_timeout(timer: &JsValue) {
+    let global = js_sys::global();
+    if let Ok(value) = Reflect::get(&global, &JsValue::from_str("clearTimeout")) {
+        if let Ok(function) = value.dyn_into::<Function>() {
+            let _ = function.call1(&global, timer);
+        }
+    }
+}
+
 async fn response_bytes(
     response: &Response,
     limit: u64,
@@ -254,10 +281,17 @@ async fn response_bytes(
     Ok(bytes)
 }
 
+struct TimedResponse {
+    response: Response,
+    timer: JsValue,
+}
+
 #[wasm_bindgen]
 pub struct ZedClient {
     base: String,
     token: Option<String>,
+    token_error: Option<String>,
+    timeout_ms: u32,
     configuration_error: Option<String>,
 }
 
@@ -275,6 +309,8 @@ impl ZedClient {
         ZedClient {
             base,
             token: None,
+            token_error: None,
+            timeout_ms: DEFAULT_TIMEOUT_MS,
             configuration_error,
         }
     }
@@ -282,19 +318,48 @@ impl ZedClient {
     #[wasm_bindgen(js_name = withToken)]
     pub fn with_token(&mut self, token: String) {
         let trimmed = token.trim();
-        self.token = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        if trimmed.is_empty() {
+            self.token = None;
+            self.token_error = None;
+        } else if trimmed.chars().any(char::is_control) {
+            self.token = None;
+            self.token_error = Some("token must not contain control characters".to_string());
+        } else {
+            self.token = Some(trimmed.to_string());
+            self.token_error = None;
+        }
+    }
+
+    #[wasm_bindgen(js_name = withTimeoutMs)]
+    pub fn with_timeout_ms(&mut self, timeout_ms: u32) -> Result<(), JsValue> {
+        if timeout_ms == 0 {
+            return Err(api_js_error(
+                0,
+                "invalid_timeout",
+                "timeout_ms must be positive",
+            ));
+        }
+        self.timeout_ms = timeout_ms;
+        Ok(())
     }
 
     fn ensure_configured(&self) -> Result<(), JsValue> {
         if let Some(error) = &self.configuration_error {
-            return Err(js_error(error));
+            return Err(api_js_error(0, "invalid_configuration", error));
         }
         Ok(())
     }
 
     fn require_token(&self) -> Result<&str, JsValue> {
+        if let Some(error) = &self.token_error {
+            return Err(api_js_error(0, "invalid_token", error));
+        }
         self.token.as_deref().ok_or_else(|| {
-            js_error("authenticated registry operation requires a nonblank bearer token")
+            api_js_error(
+                0,
+                "missing_token",
+                "authenticated registry operation requires a nonblank bearer token",
+            )
         })
     }
 
@@ -302,7 +367,7 @@ impl ZedClient {
         format!("{}{path}", self.base)
     }
 
-    async fn send(&self, request: Request, authorized: bool) -> Result<Response, JsValue> {
+    async fn send(&self, request: Request, authorized: bool) -> Result<TimedResponse, JsValue> {
         self.ensure_configured()?;
         if authorized {
             request.headers().set(
@@ -311,8 +376,27 @@ impl ZedClient {
             )?;
         }
         request.headers().set("accept", "application/json")?;
-        let response = JsFuture::from(global_fetch(&request)?).await?;
-        response.dyn_into().map_err(JsValue::from)
+
+        let controller = AbortController::new()?;
+        let init = RequestInit::new();
+        init.set_signal(Some(&controller.signal()));
+        init.set_redirect(RequestRedirect::Error);
+        let timed_request = Request::new_with_request_and_init(&request, &init)?;
+        let timer = schedule_abort(controller, self.timeout_ms)?;
+        let response = match JsFuture::from(global_fetch(&timed_request)?).await {
+            Ok(response) => match response.dyn_into::<Response>() {
+                Ok(response) => response,
+                Err(error) => {
+                    clear_timeout(&timer);
+                    return Err(error);
+                }
+            },
+            Err(error) => {
+                clear_timeout(&timer);
+                return Err(error);
+            }
+        };
+        Ok(TimedResponse { response, timer })
     }
 
     async fn check(&self, response: Response) -> Result<Response, JsValue> {
@@ -352,18 +436,23 @@ impl ZedClient {
         request: Request,
         authorized: bool,
     ) -> Result<JsValue, JsValue> {
-        let response = self.send(request, authorized).await?;
-        let response = self.check(response).await?;
-        let bytes = response_bytes(
-            &response,
-            MAX_JSON_RESPONSE_BYTES,
-            "response_too_large",
-            "registry JSON response",
-        )
-        .await?;
-        let value: T = serde_json::from_slice(&bytes)
-            .map_err(|error| api_js_error(0, "invalid_response", &error.to_string()))?;
-        serde_wasm_bindgen::to_value(&value).map_err(JsValue::from)
+        let TimedResponse { response, timer } = self.send(request, authorized).await?;
+        let result = async {
+            let response = self.check(response).await?;
+            let bytes = response_bytes(
+                &response,
+                MAX_JSON_RESPONSE_BYTES,
+                "response_too_large",
+                "registry JSON response",
+            )
+            .await?;
+            let value: T = serde_json::from_slice(&bytes)
+                .map_err(|error| api_js_error(0, "invalid_response", &error.to_string()))?;
+            serde_wasm_bindgen::to_value(&value).map_err(JsValue::from)
+        }
+        .await;
+        clear_timeout(&timer);
+        result
     }
 
     fn get_request(&self, path: &str) -> Result<Request, JsValue> {
@@ -480,17 +569,22 @@ impl ZedClient {
         init.set_method("GET");
         init.set_redirect(RequestRedirect::Error);
         let request = Request::new_with_str_and_init(&url, &init)?;
-        let response = self.send(request, false).await?;
-        let response = self.check(response).await?;
-        let bytes = response_bytes(
-            &response,
-            download_limit(version.size),
-            "artifact_too_large",
-            "artifact",
-        )
-        .await?;
-        verify_sha256(&bytes, &version.sha256).map_err(js_error)?;
-        Ok(Uint8Array::from(bytes.as_slice()))
+        let TimedResponse { response, timer } = self.send(request, false).await?;
+        let result = async {
+            let response = self.check(response).await?;
+            let bytes = response_bytes(
+                &response,
+                download_limit(version.size),
+                "artifact_too_large",
+                "artifact",
+            )
+            .await?;
+            verify_sha256(&bytes, &version.sha256).map_err(js_error)?;
+            Ok(Uint8Array::from(bytes.as_slice()))
+        }
+        .await;
+        clear_timeout(&timer);
+        result
     }
 
     pub async fn publish(
@@ -616,6 +710,8 @@ mod tests {
             "https://registry.zpkg.tech/gateway/artifacts/hash"
         );
         assert!(resolve_download_url("../escape", base, "abc").is_err());
+        assert!(resolve_download_url("%2e%2e/escape", base, "abc").is_err());
+        assert!(resolve_download_url("a%2Fb", base, "abc").is_err());
     }
 
     #[test]
@@ -627,5 +723,8 @@ mod tests {
         assert!(client.token.is_none());
         client.with_token("   ".to_string());
         assert!(client.token.is_none());
+        client.with_token("token\r\nheader".to_string());
+        assert!(client.token.is_none());
+        assert!(client.token_error.is_some());
     }
 }
