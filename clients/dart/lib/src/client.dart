@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show InternetAddress;
 import 'dart:typed_data';
@@ -9,8 +10,17 @@ import 'models.dart';
 
 const String defaultRegistryUrl = 'https://registry.zpkg.tech';
 
-/// Bounds every request (connect + read).
+/// Bounds every request, including streamed response-body consumption.
 const Duration defaultTimeout = Duration(seconds: 30);
+
+/// Successful JSON documents are never allowed to grow without bound.
+const int maxJsonResponseBytes = 16 * 1024 * 1024;
+
+/// Remote error text is retained only through this bounded explicit field.
+const int maxErrorBodyBytes = 16 * 1024;
+
+/// Maximum UTF-8 size of one opaque registry route segment.
+const int maxPathSegmentBytes = 256;
 
 /// Hard ceiling on artifact downloads, matching the server's
 /// `MAX_ARTIFACT_BYTES` default (100 MiB); plus the slack added to a
@@ -27,18 +37,65 @@ int downloadLimit(int size) {
   return maxArtifactBytes;
 }
 
-String _segment(String value) => Uri.encodeComponent(value);
+String _requireText(String value, String name) {
+  if (value.trim().isEmpty) {
+    throw ArgumentError.value(value, name, 'must not be blank');
+  }
+  if (value == '.' || value == '..') {
+    throw ArgumentError.value(value, name, 'must not be a dot segment');
+  }
+  if (utf8.encode(value).length > maxPathSegmentBytes) {
+    throw ArgumentError.value(
+        value, name, 'exceeds $maxPathSegmentBytes UTF-8 bytes');
+  }
+  if (value.runes.any((rune) => rune < 0x20 || rune == 0x7f)) {
+    throw ArgumentError.value(value, name, 'must not contain control characters');
+  }
+  return value;
+}
+
+String _segment(String value, [String name = 'path segment']) =>
+    Uri.encodeComponent(_requireText(value, name));
 
 String packagePath(String org, String name) =>
-    '/v1/packages/${_segment(org)}/${_segment(name)}';
+    '/v1/packages/${_segment(org, 'org')}/${_segment(name, 'name')}';
 
 String versionPath(String org, String name, String version) =>
-    '/v1/packages/${_segment(org)}/${_segment(name)}/versions/${_segment(version)}';
+    '${packagePath(org, name)}/versions/${_segment(version, 'version')}';
 
-String artifactPath(String sha256) => '/v1/artifacts/${_segment(sha256)}';
+String artifactPath(String sha256) =>
+    '/v1/artifacts/${_segment(sha256, 'sha256')}';
 
 String yankPath(String org, String name, String version) =>
     '${versionPath(org, name, version)}/yank';
+
+String normalizeRegistryUrl(String raw) {
+  final trimmed = raw.trim();
+  final uri = Uri.tryParse(trimmed);
+  if (uri == null ||
+      !uri.hasScheme ||
+      (uri.scheme != 'http' && uri.scheme != 'https') ||
+      uri.host.isEmpty ||
+      uri.userInfo.isNotEmpty ||
+      uri.hasQuery ||
+      uri.hasFragment) {
+    throw ArgumentError.value(
+      raw,
+      'registryUrl',
+      'must be a credential-free absolute HTTP(S) URL without query or fragment',
+    );
+  }
+  for (var index = 0; index < uri.pathSegments.length; index += 1) {
+    final segment = uri.pathSegments[index];
+    if (segment.isEmpty) continue;
+    _requireText(segment, 'registry path segment ${index + 1}');
+    if (segment.contains('/') || segment.contains('\\')) {
+      throw ArgumentError.value(
+          raw, 'registryUrl', 'path segments must not contain encoded separators');
+    }
+  }
+  return trimmed.replaceAll(RegExp(r'/+$'), '');
+}
 
 bool _isLoopbackHost(String host) {
   if (host == 'localhost') return true;
@@ -48,20 +105,21 @@ bool _isLoopbackHost(String host) {
 }
 
 /// Enforce the download-url scheme policy: https is always allowed; http only
-/// for loopback hosts or when the registry base is itself http. A malicious
-/// registry response must not redirect fetches to plaintext or unexpected
-/// hosts.
+/// for loopback hosts or when the registry base is itself http. Query strings
+/// remain allowed for presigned URLs, while userinfo and fragments are refused.
 String allowedDownloadUrl(String raw, String base) {
-  final Uri url;
-  try {
-    url = Uri.parse(raw);
-  } on FormatException catch (error) {
-    throw ZedApiError(0, 'bad_download_url', 'bad download url $raw: $error');
+  final url = Uri.tryParse(raw);
+  if (url == null ||
+      !url.hasScheme ||
+      url.host.isEmpty ||
+      url.userInfo.isNotEmpty ||
+      url.hasFragment) {
+    throw ZedApiError(0, 'bad_download_url', 'download URL is invalid');
   }
-  if (url.scheme == 'https') return raw;
+  if (url.scheme == 'https') return url.toString();
   if (url.scheme == 'http' &&
       (_isLoopbackHost(url.host) || base.startsWith('http://'))) {
-    return raw;
+    return url.toString();
   }
   throw ZedApiError(
     0,
@@ -71,24 +129,45 @@ String allowedDownloadUrl(String raw, String base) {
   );
 }
 
-/// Verify `bytes` against an expected lowercase hex sha256.
+/// Verify `bytes` against an expected hex sha256.
 void verifySha256(List<int> bytes, String expected) {
   final actual = sha256.convert(bytes).toString();
-  if (actual != expected) {
+  if (actual.toLowerCase() != expected.toLowerCase()) {
     throw ZedApiError(0, 'sha256_mismatch', 'expected $expected, got $actual');
   }
 }
 
 /// Client for the zed-pkg registry API.
 final class ZedClient {
-  ZedClient({
+  factory ZedClient({
     String registryUrl = defaultRegistryUrl,
-    this.token,
+    String? token,
     http.Client? httpClient,
     Duration timeout = defaultTimeout,
-  })  : base = registryUrl.replaceAll(RegExp(r'/+$'), ''),
-        _http = httpClient ?? http.Client(),
-        _ownsHttpClient = httpClient == null,
+  }) {
+    if (timeout <= Duration.zero) {
+      throw ArgumentError.value(timeout, 'timeout', 'must be positive');
+    }
+    final normalizedToken = token?.trim();
+    return ZedClient._(
+      base: normalizeRegistryUrl(registryUrl),
+      token: normalizedToken == null || normalizedToken.isEmpty
+          ? null
+          : normalizedToken,
+      httpClient: httpClient ?? http.Client(),
+      ownsHttpClient: httpClient == null,
+      timeout: timeout,
+    );
+  }
+
+  ZedClient._({
+    required this.base,
+    required this.token,
+    required http.Client httpClient,
+    required bool ownsHttpClient,
+    required Duration timeout,
+  })  : _http = httpClient,
+        _ownsHttpClient = ownsHttpClient,
         _timeout = timeout;
 
   final String base;
@@ -103,10 +182,22 @@ final class ZedClient {
     }
   }
 
+  String _requireToken() {
+    final value = token;
+    if (value == null) {
+      throw ZedApiError(
+        0,
+        'missing_token',
+        'authenticated registry operation requires a nonblank bearer token',
+      );
+    }
+    return value;
+  }
+
   Map<String, String> _headers({bool authorized = false, String? contentType}) {
     final headers = <String, String>{'accept': 'application/json'};
-    if (authorized && token != null) {
-      headers['authorization'] = 'Bearer $token';
+    if (authorized) {
+      headers['authorization'] = 'Bearer ${_requireToken()}';
     }
     if (contentType != null) {
       headers['content-type'] = contentType;
@@ -116,19 +207,83 @@ final class ZedClient {
 
   Never _throwApiError(int status, List<int> body) {
     final text = utf8.decode(body, allowMalformed: true);
-    var code = 'unknown';
+    var code = 'http_$status';
     var message = text;
     try {
       final parsed = jsonDecode(text);
       if (parsed is Map<String, dynamic>) {
-        code = parsed['code'] is String ? parsed['code'] as String : code;
+        final candidate = parsed['code'];
+        if (candidate is String && candidate.trim().isNotEmpty) {
+          code = candidate.trim();
+        }
         message =
             parsed['message'] is String ? parsed['message'] as String : text;
       }
     } on FormatException {
-      // non-JSON error body; keep the raw text
+      // Non-JSON error body remains available only through the explicit field.
     }
     throw ZedApiError(status, code, message);
+  }
+
+  Future<Uint8List> _readBounded(
+    http.StreamedResponse response,
+    int limit, {
+    required bool failOnOverflow,
+    required String overflowCode,
+    required String description,
+  }) async {
+    final declared = response.contentLength;
+    if (declared != null && declared > limit && failOnOverflow) {
+      throw ZedApiError(
+          0, overflowCode, '$description exceeded $limit bytes; refusing');
+    }
+    final builder = BytesBuilder(copy: false);
+    await for (final chunk in response.stream.timeout(_timeout)) {
+      final remaining = limit - builder.length;
+      if (chunk.length > remaining) {
+        if (remaining > 0) {
+          builder.add(chunk.sublist(0, remaining));
+        }
+        if (failOnOverflow) {
+          throw ZedApiError(
+              0, overflowCode, '$description exceeded $limit bytes; refusing');
+        }
+        break;
+      }
+      builder.add(chunk);
+    }
+    return builder.takeBytes();
+  }
+
+  Future<Uint8List> _sendBounded(
+    http.BaseRequest request, {
+    required int successLimit,
+    required String successOverflowCode,
+    required String successDescription,
+  }) {
+    request.followRedirects = false;
+    request.maxRedirects = 0;
+    return (() async {
+      final response = await _http.send(request);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        final body = await _readBounded(
+          response,
+          maxErrorBodyBytes,
+          failOnOverflow: false,
+          overflowCode: 'error_body_too_large',
+          description: 'registry error body',
+        );
+        _throwApiError(response.statusCode, body);
+      }
+      return _readBounded(
+        response,
+        successLimit,
+        failOnOverflow: true,
+        overflowCode: successOverflowCode,
+        description: successDescription,
+      );
+    })()
+        .timeout(_timeout);
   }
 
   Future<Map<String, dynamic>> _requestJson(
@@ -145,12 +300,18 @@ final class ZedClient {
     if (body != null) {
       request.body = jsonEncode(body);
     }
-    final streamed = await _http.send(request).timeout(_timeout);
-    final response = await http.Response.fromStream(streamed).timeout(_timeout);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      _throwApiError(response.statusCode, response.bodyBytes);
+    final bytes = await _sendBounded(
+      request,
+      successLimit: maxJsonResponseBytes,
+      successOverflowCode: 'response_too_large',
+      successDescription: 'registry JSON response',
+    );
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(bytes));
+    } on FormatException catch (error) {
+      throw ZedApiError(0, 'invalid_response', 'invalid registry JSON: $error');
     }
-    final decoded = jsonDecode(utf8.decode(response.bodyBytes));
     if (decoded is! Map<String, dynamic>) {
       throw ZedApiError(0, 'invalid_response', 'expected a JSON object');
     }
@@ -176,13 +337,11 @@ final class ZedClient {
       ClaimOrgResponse.fromJson(await _requestJson(
         'POST',
         '/v1/orgs',
-        body: {'slug': slug},
+        body: {'slug': _requireText(slug, 'slug')},
         authorized: true,
       ));
 
-  /// `POST .../versions/{version}/yank` — yank (`true`) or restore (`false`)
-  /// a published version. Requires a bearer token with publish rights.
-  Future<YankResponse> yank(
+  Future<YankResponse> setYanked(
           String org, String name, String version, bool yanked) async =>
       YankResponse.fromJson(await _requestJson(
         'POST',
@@ -191,57 +350,67 @@ final class ZedClient {
         authorized: true,
       ));
 
+  /// Yank a version. The optional argument is retained for compatibility.
+  Future<YankResponse> yank(String org, String name, String version,
+          [bool yanked = true]) async =>
+      setYanked(org, name, version, yanked);
+
+  /// Restore a previously yanked version.
+  Future<YankResponse> restore(String org, String name, String version) async =>
+      setYanked(org, name, version, false);
+
   /// Download an artifact, verify its sha256, and return the bytes.
   Future<Uint8List> downloadArtifact(VersionMetadata version) async {
-    // An absolute url (any scheme) must clear the scheme/host policy; a bare
-    // path is resolved against the trusted registry base.
-    final url = version.downloadUrl.contains('://')
-        ? allowedDownloadUrl(version.downloadUrl, base)
-        : '$base${artifactPath(version.sha256)}';
-    // Deliberately no auth header: download_url may point at a third-party
-    // host (e.g. a presigned S3/R2 url) and the token must not leak there.
-    final request = http.Request('GET', Uri.parse(url));
-    final streamed = await _http.send(request).timeout(_timeout);
-    final limit = downloadLimit(version.size);
-    final declared = streamed.contentLength;
-    if (declared != null && declared > limit) {
-      throw ZedApiError(
-          0, 'artifact_too_large', 'artifact exceeded $limit bytes; refusing');
-    }
-    // Stream the body, refusing once more than `limit` bytes arrive, so an
-    // over-limit body is detected without buffering the whole thing.
-    final builder = BytesBuilder(copy: false);
-    await for (final chunk in streamed.stream.timeout(_timeout)) {
-      builder.add(chunk);
-      if (builder.length > limit) {
-        throw ZedApiError(0, 'artifact_too_large',
-            'artifact exceeded $limit bytes; refusing');
+    final raw = version.downloadUrl.trim();
+    final String url;
+    if (raw.isEmpty) {
+      url = '$base${artifactPath(version.sha256)}';
+    } else {
+      final parsed = Uri.tryParse(raw);
+      if (parsed != null && parsed.hasScheme) {
+        url = allowedDownloadUrl(raw, base);
+      } else {
+        url = allowedDownloadUrl(Uri.parse('$base/').resolve(raw).toString(), base);
       }
     }
-    final bytes = builder.takeBytes();
-    if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
-      _throwApiError(streamed.statusCode, bytes);
-    }
+    // Deliberately no auth header: download_url may point at a third-party
+    // host (e.g. a presigned S3/R2 URL) and the token must not leak there.
+    final request = http.Request('GET', Uri.parse(url));
+    final bytes = await _sendBounded(
+      request,
+      successLimit: downloadLimit(version.size),
+      successOverflowCode: 'artifact_too_large',
+      successDescription: 'artifact',
+    );
     verifySha256(bytes, version.sha256);
     return bytes;
   }
 
   /// Publish: multipart `meta` (PublishMeta JSON) + `artifact` bytes.
-  /// Requires a bearer token. `meta` must carry
-  /// `manifest.package.{org,name,version}` as in the contract.
   Future<PublishResponse> publish(
       Map<String, dynamic> meta, List<int> artifact) async {
+    _requireToken();
+    if (artifact.length > maxArtifactBytes) {
+      throw ZedApiError(0, 'artifact_too_large',
+          'artifact exceeded $maxArtifactBytes bytes; refusing');
+    }
     final manifest = meta['manifest'];
     final package = manifest is Map<String, dynamic> ? manifest['package'] : null;
-    if (package is! Map<String, dynamic>) {
+    if (package is! Map<String, dynamic> ||
+        package['org'] is! String ||
+        package['name'] is! String ||
+        package['version'] is! String) {
       throw ZedApiError(
           0, 'invalid_publish_meta', 'meta.manifest.package is required');
     }
-    final org = package['org'] as String;
-    final name = package['name'] as String;
-    final version = package['version'] as String;
+    final org = _requireText(package['org'] as String, 'meta.manifest.package.org');
+    final name = _requireText(package['name'] as String, 'meta.manifest.package.name');
+    final version =
+        _requireText(package['version'] as String, 'meta.manifest.package.version');
     final request =
         http.MultipartRequest('PUT', Uri.parse('$base${versionPath(org, name, version)}'))
+          ..followRedirects = false
+          ..maxRedirects = 0
           ..headers.addAll(_headers(authorized: true))
           ..fields['meta'] = jsonEncode(meta)
           ..files.add(http.MultipartFile.fromBytes(
@@ -249,12 +418,21 @@ final class ZedClient {
             artifact,
             filename: '$org-$name-$version.tar.gz',
           ));
-    final streamed = await _http.send(request).timeout(_timeout);
-    final response = await http.Response.fromStream(streamed).timeout(_timeout);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      _throwApiError(response.statusCode, response.bodyBytes);
+    final bytes = await _sendBounded(
+      request,
+      successLimit: maxJsonResponseBytes,
+      successOverflowCode: 'response_too_large',
+      successDescription: 'registry JSON response',
+    );
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(bytes));
+    } on FormatException catch (error) {
+      throw ZedApiError(0, 'invalid_response', 'invalid registry JSON: $error');
     }
-    return PublishResponse.fromJson(
-        jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>);
+    if (decoded is! Map<String, dynamic>) {
+      throw ZedApiError(0, 'invalid_response', 'expected a JSON object');
+    }
+    return PublishResponse.fromJson(decoded);
   }
 }
