@@ -615,9 +615,11 @@ mod tests {
 
     #[test]
     fn missing_token_and_invalid_constructor_state_fail_before_transport() {
-        let client = ZedClient::new(Some("relative/path".to_string()));
-        assert!(client.ensure_configured().is_err());
-        let client = ZedClient::new(Some("https://registry.test".to_string()));
-        assert!(client.require_token().is_err());
-    }
+    let client = ZedClient::new(Some("relative/path".to_string()));
+    assert!(client.configuration_error.is_some());
+    let mut client = ZedClient::new(Some("https://registry.test".to_string()));
+    assert!(client.token.is_none());
+    client.with_token("   ".to_string());
+    assert!(client.token.is_none());
+}
 }
