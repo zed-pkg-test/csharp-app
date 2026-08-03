@@ -267,8 +267,14 @@ final class ZedClientTests: XCTestCase {
 
     func testRejectsHostileSegmentsBeforeTransport() async throws {
     let client = try makeClient()
-    for value in ["", "   ", ".", "..", "line
-break"] {
+    let hostileValues = [
+        "",
+        "   ",
+        ".",
+        "..",
+        String(UnicodeScalar(10)!),
+    ]
+    for value in hostileValues {
         do {
             _ = try await client.getPackage(org: value, name: "kit")
             XCTFail("expected segment rejection for \(value.debugDescription)")
@@ -303,7 +309,10 @@ func testRelativeDownloadURLPreservesGatewayAndUppercaseDigest() async throws {
     )
     let downloaded = try await client.downloadArtifact(version)
     XCTAssertEqual(downloaded, artifact)
-    XCTAssertEqual(recorder.snapshot().first?.url?.path, "/gateway/artifacts/hash")
+    XCTAssertEqual(
+        recorder.snapshot().first?.url?.path,
+        "/gateway/artifacts/hash"
+    )
 }
 
 func testBlankStructuredErrorCodeFallsBackToHTTPStatus() async throws {

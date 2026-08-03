@@ -35,9 +35,7 @@ fn validate_segment<'a>(segment: &'a str, name: &str) -> Result<&'a str, String>
         return Err(format!("{name} must not be a dot segment"));
     }
     if segment.len() > MAX_SEGMENT_BYTES {
-        return Err(format!(
-            "{name} exceeds {MAX_SEGMENT_BYTES} UTF-8 bytes"
-        ));
+        return Err(format!("{name} exceeds {MAX_SEGMENT_BYTES} UTF-8 bytes"));
     }
     if segment.chars().any(char::is_control) {
         return Err(format!("{name} must not contain control characters"));
@@ -69,7 +67,9 @@ fn validate_path_segments(raw_path: &str, name: &str) -> Result<(), String> {
             .map_err(|_| format!("{name} contains invalid percent encoding"))?;
         validate_segment(&decoded, &format!("{name} segment {}", index + 1))?;
         if decoded.contains('/') || decoded.contains('\\') {
-            return Err(format!("{name} segments must not contain encoded separators"));
+            return Err(format!(
+                "{name} segments must not contain encoded separators"
+            ));
         }
     }
     Ok(())
@@ -139,7 +139,11 @@ fn allowed_download_url(raw: &str, base: &str) -> Result<String, String> {
     let loopback = matches!(url.host_str(), Some("localhost"))
         || url
             .host_str()
-            .and_then(|host| host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().ok())
+            .and_then(|host| {
+                host.trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+            })
             .is_some_and(|ip| ip.is_loopback());
     match url.scheme() {
         "https" => Ok(url.to_string()),
@@ -202,11 +206,7 @@ fn api_js_error(status: u16, code: &str, registry_message: &str) -> JsValue {
         &JsValue::from_str("status"),
         &JsValue::from_f64(f64::from(status)),
     );
-    let _ = Reflect::set(
-        &value,
-        &JsValue::from_str("code"),
-        &JsValue::from_str(code),
-    );
+    let _ = Reflect::set(&value, &JsValue::from_str("code"), &JsValue::from_str(code));
     let _ = Reflect::set(
         &value,
         &JsValue::from_str("registryMessage"),
@@ -221,7 +221,10 @@ fn global_fetch(request: &Request) -> Result<js_sys::Promise, JsValue> {
     let fetch: Function = fetch
         .dyn_into()
         .map_err(|_| js_error("global fetch is unavailable in this runtime"))?;
-    fetch.call1(&global, request)?.dyn_into().map_err(JsValue::from)
+    fetch
+        .call1(&global, request)?
+        .dyn_into()
+        .map_err(JsValue::from)
 }
 
 async fn response_bytes(
@@ -290,9 +293,9 @@ impl ZedClient {
     }
 
     fn require_token(&self) -> Result<&str, JsValue> {
-        self.token
-            .as_deref()
-            .ok_or_else(|| js_error("authenticated registry operation requires a nonblank bearer token"))
+        self.token.as_deref().ok_or_else(|| {
+            js_error("authenticated registry operation requires a nonblank bearer token")
+        })
     }
 
     fn url(&self, path: &str) -> String {
@@ -490,7 +493,11 @@ impl ZedClient {
         Ok(Uint8Array::from(bytes.as_slice()))
     }
 
-    pub async fn publish(&self, meta_json: String, artifact: Uint8Array) -> Result<JsValue, JsValue> {
+    pub async fn publish(
+        &self,
+        meta_json: String,
+        artifact: Uint8Array,
+    ) -> Result<JsValue, JsValue> {
         self.ensure_configured()?;
         self.require_token()?;
         if u64::from(artifact.length()) > MAX_ARTIFACT_BYTES {
@@ -504,12 +511,10 @@ impl ZedClient {
             .map_err(|error| api_js_error(0, "invalid_publish_meta", &error.to_string()))?;
         let package = &meta.manifest.package;
         let org = checked_segment(&package.org, "meta.manifest.package.org").map_err(js_error)?;
-        let name = checked_segment(&package.name, "meta.manifest.package.name").map_err(js_error)?;
-        let version = checked_segment(
-            &package.version,
-            "meta.manifest.package.version",
-        )
-        .map_err(js_error)?;
+        let name =
+            checked_segment(&package.name, "meta.manifest.package.name").map_err(js_error)?;
+        let version =
+            checked_segment(&package.version, "meta.manifest.package.version").map_err(js_error)?;
         let path = registry::version_path(&org, &name, &version);
         let filename = safe_filename(&format!(
             "{}-{}-{}.tar.gz",
@@ -615,11 +620,12 @@ mod tests {
 
     #[test]
     fn missing_token_and_invalid_constructor_state_fail_before_transport() {
-    let client = ZedClient::new(Some("relative/path".to_string()));
-    assert!(client.configuration_error.is_some());
-    let mut client = ZedClient::new(Some("https://registry.test".to_string()));
-    assert!(client.token.is_none());
-    client.with_token("   ".to_string());
-    assert!(client.token.is_none());
-}
+        let client = ZedClient::new(Some("relative/path".to_string()));
+        assert!(client.configuration_error.is_some());
+
+        let mut client = ZedClient::new(Some("https://registry.test".to_string()));
+        assert!(client.token.is_none());
+        client.with_token("   ".to_string());
+        assert!(client.token.is_none());
+    }
 }
