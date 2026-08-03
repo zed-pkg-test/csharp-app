@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -114,7 +115,7 @@ public final class ZedClient {
     }
 
     public ClaimOrgResponse claimOrg(String slug) throws IOException, InterruptedException {
-        ObjectNode body = objectMapper.createObjectNode().put("slug", requireText(slug, "slug"));
+        ObjectNode body = objectMapper.createObjectNode().put("slug", requireSegment(slug, "slug"));
         return requestJson(
                 "POST",
                 "/v1/orgs",
@@ -185,9 +186,14 @@ public final class ZedClient {
                     // A malformed content-length is not trusted; the streaming bound still applies.
                 }
             }
-            byte[] artifact = readBounded(stream, limit, true);
+            final byte[] artifact;
+            try {
+                artifact = readBounded(stream, limit, true);
+            } catch (ResponseTooLargeException error) {
+                throw new ArtifactTooLargeException(limit);
+            }
             String actual = sha256Hex(artifact);
-            if (!actual.equalsIgnoreCase(requireText(version.sha256(), "version.sha256"))) {
+            if (!actual.equalsIgnoreCase(requireSegment(version.sha256(), "version.sha256"))) {
                 throw new Sha256MismatchException(version.sha256(), actual);
             }
             return artifact;
@@ -201,6 +207,7 @@ public final class ZedClient {
      */
     public PublishResponse publish(JsonNode meta, byte[] artifact)
             throws IOException, InterruptedException {
+        requireToken();
         Objects.requireNonNull(meta, "meta");
         Objects.requireNonNull(artifact, "artifact");
         if (!meta.isObject()) {
@@ -214,9 +221,9 @@ public final class ZedClient {
         if (!pkg.isObject()) {
             throw new ValidationException("publish meta.manifest.package must be an object");
         }
-        String org = requireText(pkg.path("org").asText(null), "meta.manifest.package.org");
-        String name = requireText(pkg.path("name").asText(null), "meta.manifest.package.name");
-        String version = requireText(
+        String org = requireSegment(pkg.path("org").asText(null), "meta.manifest.package.org");
+        String name = requireSegment(pkg.path("name").asText(null), "meta.manifest.package.name");
+        String version = requireSegment(
                 pkg.path("version").asText(null),
                 "meta.manifest.package.version"
         );
@@ -295,7 +302,10 @@ public final class ZedClient {
         try {
             JsonNode value = objectMapper.readTree(bounded);
             if (value != null && value.path("code").isTextual()) {
-                code = value.path("code").asText();
+                String candidate = value.path("code").asText().trim();
+                if (!candidate.isEmpty()) {
+                    code = candidate;
+                }
             }
         } catch (IOException ignored) {
             // Non-JSON errors retain the stable HTTP-derived code.
@@ -309,18 +319,37 @@ public final class ZedClient {
 
     private URI downloadUri(VersionMetadata version) {
         String raw = normalizeOptional(version.downloadUrl());
-        if (raw == null || !raw.contains("://")) {
+        if (raw == null) {
             return resolve(artifactPath(version.sha256()));
         }
         final URI uri;
         try {
-            uri = new URI(raw);
+            URI candidate = new URI(raw);
+            if (candidate.isAbsolute()) {
+                uri = candidate;
+            } else {
+                if (candidate.getRawAuthority() != null
+                        || raw.startsWith("/")
+                        || raw.startsWith("\\")) {
+                    throw new ValidationException(
+                            "relative download_url must not replace the registry authority or gateway path"
+                    );
+                }
+                validateRelativeDownloadPath(raw);
+                uri = URI.create(baseUri.toString() + "/").resolve(candidate);
+            }
         } catch (URISyntaxException error) {
             throw new ValidationException("download_url is invalid", error);
         }
+        return validateDownloadUri(uri);
+    }
+
+    private URI validateDownloadUri(URI uri) {
         String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
         String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
-        boolean loopback = host.equals("localhost") || host.equals("127.0.0.1") || host.equals("::1");
+        boolean loopback = host.equals("localhost")
+                || host.startsWith("127.")
+                || host.equals("::1");
         boolean allowed = scheme.equals("https")
                 || (scheme.equals("http")
                 && (loopback || baseUri.getScheme().equalsIgnoreCase("http")));
@@ -340,6 +369,7 @@ public final class ZedClient {
             throw new ValidationException("registry URL must not be null");
         }
         String trimmed = input.trim();
+        validateRawBasePath(trimmed);
         while (trimmed.endsWith("/")) {
             trimmed = trimmed.substring(0, trimmed.length() - 1);
         }
@@ -363,6 +393,61 @@ public final class ZedClient {
         return uri;
     }
 
+    private static void validateRawBasePath(String raw) {
+        int schemeEnd = raw.indexOf("://");
+        if (schemeEnd < 0) {
+            return;
+        }
+        int authorityStart = schemeEnd + 3;
+        int pathStart = raw.indexOf('/', authorityStart);
+        if (pathStart < 0) {
+            return;
+        }
+        int query = raw.indexOf('?', pathStart);
+        int fragment = raw.indexOf('#', pathStart);
+        int pathEnd = raw.length();
+        if (query >= 0) {
+            pathEnd = Math.min(pathEnd, query);
+        }
+        if (fragment >= 0) {
+            pathEnd = Math.min(pathEnd, fragment);
+        }
+        validatePathSegments(raw.substring(pathStart, pathEnd), "registry URL path");
+    }
+
+    private static void validateRelativeDownloadPath(String raw) {
+        int query = raw.indexOf('?');
+        int fragment = raw.indexOf('#');
+        int pathEnd = raw.length();
+        if (query >= 0) {
+            pathEnd = Math.min(pathEnd, query);
+        }
+        if (fragment >= 0) {
+            pathEnd = Math.min(pathEnd, fragment);
+        }
+        validatePathSegments(raw.substring(0, pathEnd), "download_url");
+    }
+
+    private static void validatePathSegments(String rawPath, String name) {
+        String[] segments = rawPath.split("/", -1);
+        for (int index = 0; index < segments.length; index++) {
+            String encoded = segments[index];
+            if (encoded.isEmpty()) {
+                continue;
+            }
+            final String decoded;
+            try {
+                decoded = URLDecoder.decode(encoded.replace("+", "%2B"), StandardCharsets.UTF_8);
+            } catch (IllegalArgumentException error) {
+                throw new ValidationException(name + " contains invalid percent encoding", error);
+            }
+            requireSegment(decoded, name + " segment " + (index + 1));
+            if (decoded.indexOf('/') >= 0 || decoded.indexOf('\\') >= 0) {
+                throw new ValidationException(name + " segments must not contain encoded separators");
+            }
+        }
+    }
+
     private static String packagePath(String org, String name) {
         return "/v1/packages/" + encodeSegment(org, "org") + "/" + encodeSegment(name, "name");
     }
@@ -380,11 +465,7 @@ public final class ZedClient {
     }
 
     private static String encodeSegment(String value, String name) {
-        String checked = requireText(value, name);
-        if (checked.getBytes(StandardCharsets.UTF_8).length > MAX_SEGMENT_BYTES
-                || checked.indexOf('\0') >= 0) {
-            throw new ValidationException(name + " is too large or contains NUL");
-        }
+        String checked = requireSegment(value, name);
         return URLEncoder.encode(checked, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
@@ -396,6 +477,9 @@ public final class ZedClient {
         if (token == null) {
             throw new MissingTokenException();
         }
+        if (token.codePoints().anyMatch(Character::isISOControl)) {
+            throw new ValidationException("token must not contain control characters");
+        }
         return token;
     }
 
@@ -404,6 +488,20 @@ public final class ZedClient {
             throw new ValidationException(name + " must not be blank");
         }
         return value;
+    }
+
+    private static String requireSegment(String value, String name) {
+        String checked = requireText(value, name);
+        if (checked.equals(".") || checked.equals("..")) {
+            throw new ValidationException(name + " must not be a dot segment");
+        }
+        if (checked.getBytes(StandardCharsets.UTF_8).length > MAX_SEGMENT_BYTES) {
+            throw new ValidationException(name + " exceeds " + MAX_SEGMENT_BYTES + " UTF-8 bytes");
+        }
+        if (checked.codePoints().anyMatch(Character::isISOControl)) {
+            throw new ValidationException(name + " must not contain control characters");
+        }
+        return checked;
     }
 
     private static String normalizeOptional(String value) {

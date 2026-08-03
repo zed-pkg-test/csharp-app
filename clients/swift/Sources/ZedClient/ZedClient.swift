@@ -478,9 +478,10 @@ public final class ZedClient: @unchecked Sendable {
         let body = String(decoding: data, as: UTF8.self)
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
-        let code = (try? decoder.decode(ErrorEnvelope.self, from: data).code)
-            .flatMap(Self.normalizeOptional)
-            ?? "http_\(status)"
+        let envelope = try? decoder.decode(ErrorEnvelope.self, from: data)
+    let code = envelope
+        .flatMap { Self.normalizeOptional($0.code) }
+        ?? "http_\(status)"
         return .api(status: status, code: code, body: body)
     }
 
@@ -497,34 +498,52 @@ public final class ZedClient: @unchecked Sendable {
     }
 
     private func downloadURL(_ version: VersionMetadata) throws -> URL {
-        let raw = Self.normalizeOptional(version.downloadURL)
-        if raw == nil || raw?.contains("://") == false {
-            return try url(path: Self.artifactPath(version.sha256))
+    guard let raw = Self.normalizeOptional(version.downloadURL) else {
+        return try url(path: try Self.artifactPath(version.sha256))
+    }
+
+    let candidate: URL
+    if raw.contains("://") {
+        guard let absolute = URL(string: raw) else {
+            throw ZedClientError.invalidConfiguration("download_url is invalid")
         }
-        guard let raw,
-              let components = URLComponents(string: raw),
-              let scheme = components.scheme?.lowercased(),
-              let host = components.host?.lowercased(),
-              !host.isEmpty,
-              components.user == nil,
-              components.password == nil,
-              components.fragment == nil,
-              let value = components.url
+        candidate = absolute
+    } else {
+        try Self.validateRelativeDownloadPath(raw)
+        guard let base = URL(string: baseURL.absoluteString + "/"),
+              let relative = URL(string: raw, relativeTo: base)?.absoluteURL
         else {
             throw ZedClientError.invalidConfiguration("download_url is invalid")
         }
-        let loopback = host == "localhost" || host == "127.0.0.1" || host == "::1"
-        let allowed = scheme == "https"
-            || (scheme == "http" && (loopback || baseURL.scheme?.lowercased() == "http"))
-        guard allowed else {
-            throw ZedClientError.invalidConfiguration(
-                "download_url must use HTTPS; HTTP is allowed only for loopback or an HTTP development registry"
-            )
-        }
-        return value
+        candidate = relative
     }
 
-    private func multipartBody(
+    guard let components = URLComponents(
+        url: candidate,
+        resolvingAgainstBaseURL: false
+    ),
+          let scheme = components.scheme?.lowercased(),
+          let host = components.host?.lowercased(),
+          !host.isEmpty,
+          components.user == nil,
+          components.password == nil,
+          components.fragment == nil,
+          let value = components.url
+    else {
+        throw ZedClientError.invalidConfiguration("download_url is invalid")
+    }
+    let loopback = host == "localhost" || host == "::1" || host.hasPrefix("127.")
+    let allowed = scheme == "https"
+        || (scheme == "http" && (loopback || baseURL.scheme?.lowercased() == "http"))
+    guard allowed else {
+        throw ZedClientError.invalidConfiguration(
+            "download_url must use HTTPS; HTTP is allowed only for loopback or an HTTP development registry"
+        )
+    }
+    return value
+}
+
+private func multipartBody(
         boundary: String,
         meta: JSONValue,
         artifact: Data,
@@ -548,9 +567,84 @@ public final class ZedClient: @unchecked Sendable {
         return body
     }
 
-    private static func validateBaseURL(_ input: String) throws -> URL {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard var components = URLComponents(string: trimmed),
+    private static func validateRawPath(
+    _ raw: String,
+    name: String
+) throws {
+    guard let schemeRange = raw.range(of: "://") else { return }
+    let authorityStart = schemeRange.upperBound
+    guard let pathStart = raw[authorityStart...].firstIndex(of: "/") else { return }
+    let suffix = raw[pathStart...]
+    let pathEnd = suffix.firstIndex(where: { $0 == "?" || $0 == "#" })
+        ?? raw.endIndex
+    for (index, encoded) in raw[pathStart..<pathEnd]
+        .split(separator: "/", omittingEmptySubsequences: true)
+        .enumerated()
+    {
+        guard let decoded = String(encoded).removingPercentEncoding else {
+            throw ZedClientError.invalidConfiguration(
+                "\(name) contains invalid percent encoding"
+            )
+        }
+        _ = try validateSegmentText(
+            decoded,
+            name: "\(name) segment \(index + 1)"
+        )
+        guard !decoded.contains("/"), !decoded.contains("\\") else {
+            throw ZedClientError.invalidConfiguration(
+                "\(name) segments must not contain encoded separators"
+            )
+        }
+    }
+}
+
+private static func validateRelativeDownloadPath(_ raw: String) throws {
+    let pathEnd = raw.firstIndex(where: { $0 == "?" || $0 == "#" })
+        ?? raw.endIndex
+    for (index, encoded) in raw[..<pathEnd]
+        .split(separator: "/", omittingEmptySubsequences: true)
+        .enumerated()
+    {
+        guard let decoded = String(encoded).removingPercentEncoding else {
+            throw ZedClientError.invalidConfiguration(
+                "download_url contains invalid percent encoding"
+            )
+        }
+        _ = try validateSegmentText(
+            decoded,
+            name: "download_url segment \(index + 1)"
+        )
+        guard !decoded.contains("/"), !decoded.contains("\\") else {
+            throw ZedClientError.invalidConfiguration(
+                "download_url segments must not contain encoded separators"
+            )
+        }
+    }
+}
+
+private static func validateSegmentText(
+    _ value: String,
+    name: String
+) throws -> String {
+    let checked = try requireText(value, name: name)
+    guard checked != ".",
+          checked != "..",
+          checked.utf8.count <= maxSegmentBytes,
+          !checked.unicodeScalars.contains(where: {
+              CharacterSet.controlCharacters.contains($0)
+          })
+    else {
+        throw ZedClientError.invalidConfiguration(
+            "\(name) must not be a dot segment, exceed \(maxSegmentBytes) UTF-8 bytes, or contain control characters"
+        )
+    }
+    return checked
+}
+
+private static func validateBaseURL(_ input: String) throws -> URL {
+    let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    try validateRawPath(trimmed, name: "registry URL path")
+    guard var components = URLComponents(string: trimmed),
               let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               let host = components.host,
@@ -589,28 +683,23 @@ public final class ZedClient: @unchecked Sendable {
         "\(try versionPath(org: org, name: name, version: version))/yank"
     }
 
-    private static func artifactPath(_ sha256: String) -> String {
-        let encoded = (try? encodeSegment(sha256, name: "sha256")) ?? ""
-        return "/v1/artifacts/\(encoded)"
-    }
+    private static func artifactPath(_ sha256: String) throws -> String {
+    let encoded = try encodeSegment(sha256, name: "sha256")
+    return "/v1/artifacts/\(encoded)"
+}
 
-    private static func encodeSegment(_ value: String, name: String) throws -> String {
-        let checked = try requireText(value, name: name)
-        guard checked.utf8.count <= maxSegmentBytes,
-              !checked.unicodeScalars.contains(where: { $0.value == 0 })
-        else {
-            throw ZedClientError.invalidConfiguration("\(name) is too large or contains NUL")
-        }
-        let allowed = CharacterSet(
-            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
-        )
-        guard let encoded = checked.addingPercentEncoding(withAllowedCharacters: allowed) else {
-            throw ZedClientError.invalidConfiguration("\(name) could not be encoded")
-        }
-        return encoded
+private static func encodeSegment(_ value: String, name: String) throws -> String {
+    let checked = try validateSegmentText(value, name: name)
+    let allowed = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+    )
+    guard let encoded = checked.addingPercentEncoding(withAllowedCharacters: allowed) else {
+        throw ZedClientError.invalidConfiguration("\(name) could not be encoded")
     }
+    return encoded
+}
 
-    private static func requireText(_ value: String?, name: String) throws -> String {
+private static func requireText(_ value: String?, name: String) throws -> String {
         guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ZedClientError.invalidConfiguration("\(name) must not be blank")
         }
@@ -643,10 +732,13 @@ public final class ZedClient: @unchecked Sendable {
             )
         }
         return PackageCoordinate(
-            org: try requireText(org, name: "meta.manifest.package.org"),
-            name: try requireText(name, name: "meta.manifest.package.name"),
-            version: try requireText(version, name: "meta.manifest.package.version")
-        )
+    org: try validateSegmentText(org, name: "meta.manifest.package.org"),
+    name: try validateSegmentText(name, name: "meta.manifest.package.name"),
+    version: try validateSegmentText(
+        version,
+        name: "meta.manifest.package.version"
+    )
+)
     }
 
     private static func safeFilename(_ value: String) -> String {
