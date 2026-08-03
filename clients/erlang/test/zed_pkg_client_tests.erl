@@ -166,11 +166,11 @@ api_errors_carry_the_registry_code_test() ->
     Request = captured_request(Ref),
     ?assertMatch({_, _}, binary:match(Request, <<"authorization: Bearer zpkg_t">>)).
 
-non_json_error_bodies_map_to_unknown_test() ->
+non_json_error_bodies_map_to_http_status_test() ->
     {Port, Ref} = spawn_server(500, "text/plain", <<"boom">>),
     {ok, Client} = zed_pkg_client:new("http://127.0.0.1:" ++ integer_to_list(Port)),
     ?assertEqual(
-        {error, {api_error, 500, <<"unknown">>, <<"boom">>}},
+        {error, {api_error, 500, <<"http_500">>, <<"boom">>}},
         zed_pkg_client:get_version(Client, "acme", "kit", "1.2.0")
     ),
     _ = captured_request(Ref),
