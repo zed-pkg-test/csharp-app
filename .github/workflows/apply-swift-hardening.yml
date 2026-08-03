@@ -1,83 +1,40 @@
-name: apply Swift hardening
+name: Swift hardening patch source
 
 on:
-  push:
-    branches:
-      - alexanderdmills/den-1403-native-client-hardening
-    paths:
-      - .github/workflows/apply-swift-hardening.yml
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply:
-    if: github.actor != 'github-actions[bot]'
+  inert:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: alexanderdmills/den-1403-native-client-hardening
-          persist-credentials: true
-          show-progress: false
-
-      - name: Apply asserted Swift transport and input corrections
-        run: |
+      - run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          def replace_once(path, old, new, label):
+          def sub_once(path, pattern, replacement, label, flags=0):
               source = path.read_text(encoding='utf-8')
-              count = source.count(old)
+              updated, count = re.subn(pattern, lambda _: replacement, source, count=1, flags=flags)
               if count != 1:
                   raise SystemExit(f'{label}: expected one match, found {count}')
-              path.write_text(source.replace(old, new, 1), encoding='utf-8')
+              path.write_text(updated, encoding='utf-8')
 
           production = Path('clients/swift/Sources/ZedClient/ZedClient.swift')
-          replace_once(
+          sub_once(
               production,
-              '''        let code = (try? decoder.decode(ErrorEnvelope.self, from: data).code)
-                  .flatMap(Self.normalizeOptional)
-                  ?? "http_\\(status)"
-          ''',
+              r'''        let code = \(try\? decoder\.decode\(ErrorEnvelope\.self, from: data\)\.code\)\n            \.flatMap\(Self\.normalizeOptional\)\n            \?\? "http_\\\(status\)"''',
               '''        let envelope = try? decoder.decode(ErrorEnvelope.self, from: data)
               let code = envelope
                   .flatMap { Self.normalizeOptional($0.code) }
-                  ?? "http_\\(status)"
-          ''',
+                  ?? "http_\\(status)"''',
               'Swift optional error-code flattening',
           )
-          replace_once(
+          sub_once(
               production,
-              '''    private func downloadURL(_ version: VersionMetadata) throws -> URL {
-              let raw = Self.normalizeOptional(version.downloadURL)
-              if raw == nil || raw?.contains("://") == false {
-                  return try url(path: Self.artifactPath(version.sha256))
-              }
-              guard let raw,
-                    let components = URLComponents(string: raw),
-                    let scheme = components.scheme?.lowercased(),
-                    let host = components.host?.lowercased(),
-                    !host.isEmpty,
-                    components.user == nil,
-                    components.password == nil,
-                    components.fragment == nil,
-                    let value = components.url
-              else {
-                  throw ZedClientError.invalidConfiguration("download_url is invalid")
-              }
-              let loopback = host == "localhost" || host == "127.0.0.1" || host == "::1"
-              let allowed = scheme == "https"
-                  || (scheme == "http" && (loopback || baseURL.scheme?.lowercased() == "http"))
-              guard allowed else {
-                  throw ZedClientError.invalidConfiguration(
-                      "download_url must use HTTPS; HTTP is allowed only for loopback or an HTTP development registry"
-                  )
-              }
-              return value
-          }
-          ''',
+              r'''    private func downloadURL\(_ version: VersionMetadata\) throws -> URL \{.*?\n    \}\n\n    private func multipartBody''',
               '''    private func downloadURL(_ version: VersionMetadata) throws -> URL {
               guard let raw = Self.normalizeOptional(version.downloadURL) else {
                   return try url(path: try Self.artifactPath(version.sha256))
@@ -123,15 +80,14 @@ jobs:
               }
               return value
           }
-          ''',
+
+          private func multipartBody''',
               'Swift relative artifact URL handling',
+              re.DOTALL,
           )
-          replace_once(
+          sub_once(
               production,
-              '''    private static func validateBaseURL(_ input: String) throws -> URL {
-              let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-              guard var components = URLComponents(string: trimmed),
-          ''',
+              r'''    private static func validateBaseURL\(_ input: String\) throws -> URL \{\n        let trimmed = input\.trimmingCharacters\(in: \.whitespacesAndNewlines\)\n        guard var components = URLComponents\(string: trimmed\),''',
               '''    private static func validateRawPath(
               _ raw: String,
               name: String
@@ -209,25 +165,12 @@ jobs:
           private static func validateBaseURL(_ input: String) throws -> URL {
               let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
               try validateRawPath(trimmed, name: "registry URL path")
-              guard var components = URLComponents(string: trimmed),
-          ''',
+              guard var components = URLComponents(string: trimmed),''',
               'Swift raw base path validation',
           )
-          replace_once(
+          sub_once(
               production,
-              '''    private static func artifactPath(_ sha256: String) -> String {
-              let encoded = (try? encodeSegment(sha256, name: "sha256")) ?? ""
-              return "/v1/artifacts/\\(encoded)"
-          }
-
-          private static func encodeSegment(_ value: String, name: String) throws -> String {
-              let checked = try requireText(value, name: name)
-              guard checked.utf8.count <= maxSegmentBytes,
-                    !checked.unicodeScalars.contains(where: { $0.value == 0 })
-              else {
-                  throw ZedClientError.invalidConfiguration("\\(name) is too large or contains NUL")
-              }
-          ''',
+              r'''    private static func artifactPath\(_ sha256: String\) -> String \{.*?\n    \}\n\n    private static func requireText''',
               '''    private static func artifactPath(_ sha256: String) throws -> String {
               let encoded = try encodeSegment(sha256, name: "sha256")
               return "/v1/artifacts/\\(encoded)"
@@ -235,54 +178,49 @@ jobs:
 
           private static func encodeSegment(_ value: String, name: String) throws -> String {
               let checked = try validateSegmentText(value, name: name)
-          ''',
+              let allowed = CharacterSet(
+                  charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+              )
+              guard let encoded = checked.addingPercentEncoding(withAllowedCharacters: allowed) else {
+                  throw ZedClientError.invalidConfiguration("\\(name) could not be encoded")
+              }
+              return encoded
+          }
+
+          private static func requireText''',
               'Swift opaque segment validation',
+              re.DOTALL,
           )
-          replace_once(
+          sub_once(
               production,
+              r'''        return PackageCoordinate\(\n            org: try requireText\(org, name: "meta\.manifest\.package\.org"\),\n            name: try requireText\(name, name: "meta\.manifest\.package\.name"\),\n            version: try requireText\(version, name: "meta\.manifest\.package\.version"\)\n        \)''',
               '''        return PackageCoordinate(
-              org: try requireText(org, name: "meta.manifest.package.org"),
-              name: try requireText(name, name: "meta.manifest.package.name"),
-              version: try requireText(version, name: "meta.manifest.package.version")
-          )
-          ''',
-              '''        return PackageCoordinate(
-              org: try validateSegmentText(
-                  org,
-                  name: "meta.manifest.package.org"
-              ),
-              name: try validateSegmentText(
-                  name,
-                  name: "meta.manifest.package.name"
-              ),
+              org: try validateSegmentText(org, name: "meta.manifest.package.org"),
+              name: try validateSegmentText(name, name: "meta.manifest.package.name"),
               version: try validateSegmentText(
                   version,
                   name: "meta.manifest.package.version"
               )
-          )
-          ''',
+          )''',
               'Swift publish-coordinate validation',
           )
 
           tests = Path('clients/swift/Tests/ZedClientTests/ZedClientTests.swift')
-          replace_once(
+          sub_once(
               tests,
-              '''            "https://registry.example#fragment",
-              ] {
-          ''',
+              r'''            "https://registry\.example#fragment",\n        \] \{''',
               '''            "https://registry.example#fragment",
                   "https://registry.example/../admin",
                   "https://registry.example/%2e%2e/admin",
                   "https://registry.example/a%2Fb",
-              ] {
-          ''',
+              ] {''',
               'Swift hostile base URL cases',
           )
-          replace_once(
-              tests,
-              '''    func testAuthenticatedOperationsRequireTokenBeforeTransport() async throws {
-          ''',
-              '''    func testRejectsHostileSegmentsBeforeTransport() async throws {
+          marker = '    func testAuthenticatedOperationsRequireTokenBeforeTransport() async throws {'
+          source = tests.read_text(encoding='utf-8')
+          if source.count(marker) != 1:
+              raise SystemExit(f'Swift hardening tests marker: expected one match, found {source.count(marker)}')
+          additions = '''    func testRejectsHostileSegmentsBeforeTransport() async throws {
               let client = try makeClient()
               for value in ["", "   ", ".", "..", "line\\nbreak"] {
                   do {
@@ -341,18 +279,6 @@ jobs:
               }
           }
 
-          func testAuthenticatedOperationsRequireTokenBeforeTransport() async throws {
-          ''',
-              'Swift hardening regression tests',
-          )
+          '''
+          tests.write_text(source.replace(marker, additions + marker, 1), encoding='utf-8')
           PY
-          git diff --check
-
-      - name: Commit the asserted Swift patch
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add clients/swift/Sources/ZedClient/ZedClient.swift \
-            clients/swift/Tests/ZedClientTests/ZedClientTests.swift
-          git commit -m 'DEN-1403 harden Swift URL and coordinate handling'
-          git push origin HEAD:alexanderdmills/den-1403-native-client-hardening
