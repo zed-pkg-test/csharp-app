@@ -186,7 +186,12 @@ public final class ZedClient {
                     // A malformed content-length is not trusted; the streaming bound still applies.
                 }
             }
-            byte[] artifact = readBounded(stream, limit, true);
+            final byte[] artifact;
+            try {
+                artifact = readBounded(stream, limit, true);
+            } catch (ResponseTooLargeException error) {
+                throw new ArtifactTooLargeException(limit);
+            }
             String actual = sha256Hex(artifact);
             if (!actual.equalsIgnoreCase(requireSegment(version.sha256(), "version.sha256"))) {
                 throw new Sha256MismatchException(version.sha256(), actual);
@@ -320,9 +325,19 @@ public final class ZedClient {
         final URI uri;
         try {
             URI candidate = new URI(raw);
-            uri = candidate.isAbsolute()
-                    ? candidate
-                    : URI.create(baseUri.toString() + "/").resolve(candidate);
+            if (candidate.isAbsolute()) {
+                uri = candidate;
+            } else {
+                if (candidate.getRawAuthority() != null
+                        || raw.startsWith("/")
+                        || raw.startsWith("\\")) {
+                    throw new ValidationException(
+                            "relative download_url must not replace the registry authority or gateway path"
+                    );
+                }
+                validateRelativeDownloadPath(raw);
+                uri = URI.create(baseUri.toString() + "/").resolve(candidate);
+            }
         } catch (URISyntaxException error) {
             throw new ValidationException("download_url is invalid", error);
         }
@@ -397,7 +412,24 @@ public final class ZedClient {
         if (fragment >= 0) {
             pathEnd = Math.min(pathEnd, fragment);
         }
-        String[] segments = raw.substring(pathStart, pathEnd).split("/", -1);
+        validatePathSegments(raw.substring(pathStart, pathEnd), "registry URL path");
+    }
+
+    private static void validateRelativeDownloadPath(String raw) {
+        int query = raw.indexOf('?');
+        int fragment = raw.indexOf('#');
+        int pathEnd = raw.length();
+        if (query >= 0) {
+            pathEnd = Math.min(pathEnd, query);
+        }
+        if (fragment >= 0) {
+            pathEnd = Math.min(pathEnd, fragment);
+        }
+        validatePathSegments(raw.substring(0, pathEnd), "download_url");
+    }
+
+    private static void validatePathSegments(String rawPath, String name) {
+        String[] segments = rawPath.split("/", -1);
         for (int index = 0; index < segments.length; index++) {
             String encoded = segments[index];
             if (encoded.isEmpty()) {
@@ -407,11 +439,11 @@ public final class ZedClient {
             try {
                 decoded = URLDecoder.decode(encoded.replace("+", "%2B"), StandardCharsets.UTF_8);
             } catch (IllegalArgumentException error) {
-                throw new ValidationException("registry URL contains invalid percent encoding", error);
+                throw new ValidationException(name + " contains invalid percent encoding", error);
             }
-            requireSegment(decoded, "registry path segment " + (index + 1));
+            requireSegment(decoded, name + " segment " + (index + 1));
             if (decoded.indexOf('/') >= 0 || decoded.indexOf('\\') >= 0) {
-                throw new ValidationException("registry path segments must not contain encoded separators");
+                throw new ValidationException(name + " segments must not contain encoded separators");
             }
         }
     }
@@ -444,6 +476,9 @@ public final class ZedClient {
     private String requireToken() {
         if (token == null) {
             throw new MissingTokenException();
+        }
+        if (token.codePoints().anyMatch(Character::isISOControl)) {
+            throw new ValidationException("token must not contain control characters");
         }
         return token;
     }
