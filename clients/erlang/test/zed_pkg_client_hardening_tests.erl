@@ -3,6 +3,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(MAX_ERROR_BODY_BYTES, 16384).
+-define(MAX_TOKEN_BYTES, 8192).
 
 invalid_bases_and_dot_segments_are_rejected_test() ->
     InvalidBases = [
@@ -59,6 +60,43 @@ hostile_segments_and_missing_tokens_fail_before_transport_test() ->
     ?assertMatch(
         {error, {invalid_input, _}},
         zed_pkg_client:claim_org(UnsafeToken, "acme")
+    ),
+    BoundaryToken = binary:copy(<<"t">>, ?MAX_TOKEN_BYTES),
+    BoundaryClient = zed_pkg_client:with_token(Client, BoundaryToken),
+    ?assertEqual(?MAX_TOKEN_BYTES, byte_size(maps:get(token, BoundaryClient))),
+    OverlongToken = binary:copy(<<"t">>, ?MAX_TOKEN_BYTES + 1),
+    OverlongClient = zed_pkg_client:with_token(Client, OverlongToken),
+    ?assertMatch(
+        {error, {invalid_input, _}},
+        zed_pkg_client:claim_org(OverlongClient, "acme")
+    ),
+    MutatedControlClient = Client#{
+        token => <<"token\r\nheader">>,
+        token_error => undefined
+    },
+    ?assertMatch(
+        {error, {invalid_input, _}},
+        zed_pkg_client:restore(MutatedControlClient, "acme", "kit", "1.2.0")
+    ),
+    MutatedTypeClient = Client#{token => 42, token_error => undefined},
+    ?assertMatch(
+        {error, {invalid_input, _}},
+        zed_pkg_client:claim_org(MutatedTypeClient, "acme")
+    ),
+    ?assertMatch(
+        {error, {invalid_configuration, _}},
+        zed_pkg_client:publish(
+            not_a_client,
+            "acme",
+            "kit",
+            "1.2.0",
+            Meta,
+            <<"bytes">>
+        )
+    ),
+    ?assertMatch(
+        {error, {invalid_configuration, _}},
+        zed_pkg_client:with_token(not_a_client, <<"token">>)
     ).
 
 artifact_url_policy_rejects_credentials_fragments_and_unsupported_schemes_test() ->

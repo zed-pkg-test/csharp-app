@@ -1,241 +1,209 @@
-name: DEN-1459 apply Erlang token revalidation
+name: ci
 
 on:
+  push:
+    branches: [main]
   pull_request:
-    paths:
-      - .github/workflows/ci.yml
-      - .github/workflows/den-1459-erlang-token-revalidation.yml
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: den-1459-apply-${{ github.ref }}
+  group: zed-clients-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  apply:
-    if: github.actor != 'github-actions[bot]'
+  contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.head_ref }}
-          persist-credentials: true
-          show-progress: false
-          fetch-depth: 0
-
-      - name: Apply function-boundary Erlang corrections
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - name: Validate the ten-language Zed target matrix
         run: |
           python3 - <<'PY'
-          from pathlib import Path
-          import re
+          import pathlib
+          import tomllib
 
-          def sub_once(path: Path, pattern: str, replacement: str, label: str) -> None:
-              source = path.read_text(encoding='utf-8')
-              updated, count = re.subn(
-                  pattern,
-                  lambda _match: replacement,
-                  source,
-                  count=1,
-                  flags=re.DOTALL,
+          root = pathlib.Path.cwd()
+          with (root / ".zpkg.toml").open("rb") as handle:
+              manifest = tomllib.load(handle)
+          with (root / ".zpkg.lock").open("rb") as handle:
+              lock = tomllib.load(handle)
+          assert lock["version"] == 1
+
+          required = {
+              "nodejs": ("clients/typescript", "package.json"),
+              "python": ("clients/python", "pyproject.toml"),
+              "golang": ("clients/go", "go.mod"),
+              "rust": ("clients/rust", "Cargo.toml"),
+              "rust-wasm": ("clients/wasm", "Cargo.toml"),
+              "dart": ("clients/dart", "pubspec.yaml"),
+              "gleam": ("clients/gleam", "gleam.toml"),
+              "erlang": ("clients/erlang", "rebar.config"),
+              "java": ("clients/java", "pom.xml"),
+              "swift": ("clients/swift", "Package.swift"),
+          }
+          targets = manifest["targets"]
+          for target, (directory, native_manifest) in required.items():
+              assert targets[target]["dir"] == directory, (target, targets[target])
+              assert (root / directory / native_manifest).is_file(), (
+                  target,
+                  native_manifest,
               )
-              if count != 1:
-                  raise SystemExit(f'{label}: expected one match, found {count}')
-              path.write_text(updated, encoding='utf-8')
-
-          source = Path('clients/erlang/src/zed_pkg_client.erl')
-          text = source.read_text(encoding='utf-8')
-          marker = '-define(MAX_PATH_SEGMENT_BYTES, 256).\n'
-          if text.count(marker) != 1:
-              raise SystemExit(f'token ceiling marker: expected one match, found {text.count(marker)}')
-          source.write_text(
-              text.replace(marker, marker + '-define(MAX_TOKEN_BYTES, 8192).\n', 1),
-              encoding='utf-8',
-          )
-
-          sub_once(
-              source,
-              r'with_token\(Client, Token\) when is_map\(Client\) ->.*?\n\s*end\.',
-              '''with_token(Client, Token) when is_map(Client) ->
-              case normalize_token(Token) of
-                  {ok, Normalized} -> Client#{token => Normalized, token_error => undefined};
-                  {error, Reason} -> Client#{token => undefined, token_error => Reason}
-              end;
-          with_token(_Client, _Token) ->
-              {error, {invalid_configuration, <<"client must be a map returned by new/1">>}}.''',
-              'with_token clauses',
-          )
-
-          sub_once(
-              source,
-              r'normalize_token\(undefined\) ->.*?\n\nvalidate_base\(Value\) ->',
-              '''normalize_token(undefined) ->
-              {ok, undefined};
-          normalize_token(Value) when is_binary(Value); is_list(Value); is_atom(Value) ->
-              Token = trim_binary(text(Value)),
-              case Token of
-                  <<>> ->
-                      {ok, undefined};
-                  _ when byte_size(Token) > ?MAX_TOKEN_BYTES ->
-                      {error,
-                          {invalid_input,
-                              <<"token must not exceed 8192 UTF-8 bytes">>}};
-                  _ ->
-                      case has_control(Token) of
-                          true ->
-                              {error,
-                                  {invalid_input,
-                                      <<"token must not contain control characters">>}};
-                          false -> {ok, Token}
-                      end
-              end;
-          normalize_token(_) ->
-              {error, {invalid_input, <<"token must be text">>}}.
-
-          validate_base(Value) ->''',
-              'normalize_token function',
-          )
-
-          sub_once(
-              source,
-              r'auth_headers\(Client, true\) ->.*?auth_headers\(_Client, false\) ->\n\s*\{ok, \[\]\}\.',
-              '''auth_headers(Client, true) when is_map(Client) ->
-              case maps:get(token_error, Client, undefined) of
-                  undefined ->
-                      %% Client maps remain transparent for compatibility, so callers can mutate
-                      %% them after construction. Revalidate the live token on every authenticated
-                      %% operation instead of trusting only with_token/2 state.
-                      case normalize_token(maps:get(token, Client, undefined)) of
-                          {ok, undefined} ->
-                              {error,
-                                  {missing_token,
-                                      <<"authenticated registry operation requires a nonblank bearer token">>}};
-                          {ok, Token} ->
-                              {ok, [{"authorization", "Bearer " ++ binary_to_list(Token)}]};
-                          {error, Reason} -> {error, Reason}
-                      end;
-                  TokenError -> {error, TokenError}
-              end;
-          auth_headers(_Client, true) ->
-              {error, {invalid_configuration, <<"client must be a map returned by new/1">>}};
-          auth_headers(_Client, false) ->
-              {ok, []}.''',
-              'auth_headers function',
-          )
-
-          tests = Path('clients/erlang/test/zed_pkg_client_hardening_tests.erl')
-          test_text = tests.read_text(encoding='utf-8')
-          test_marker = '-define(MAX_ERROR_BODY_BYTES, 16384).\n'
-          if test_text.count(test_marker) != 1:
-              raise SystemExit(
-                  f'test token ceiling marker: expected one match, found {test_text.count(test_marker)}'
-              )
-          tests.write_text(
-              test_text.replace(
-                  test_marker,
-                  test_marker + '-define(MAX_TOKEN_BYTES, 8192).\n',
-                  1,
-              ),
-              encoding='utf-8',
-          )
-
-          sub_once(
-              tests,
-              r'hostile_segments_and_missing_tokens_fail_before_transport_test\(\) ->.*?\n\nartifact_url_policy_rejects_credentials_fragments_and_unsupported_schemes_test\(\) ->',
-              '''hostile_segments_and_missing_tokens_fail_before_transport_test() ->
-              {ok, Client} = zed_pkg_client:new("http://127.0.0.1:9"),
-              lists:foreach(
-                  fun(Value) ->
-                      ?assertMatch(
-                          {error, {invalid_input, _}},
-                          zed_pkg_client:get_package(Client, Value, "kit")
-                      )
-                  end,
-                  [<<>>, <<"   ">>, <<".">>, <<"..">>, <<"line\\nbreak">>]
-              ),
-              Overlong = binary:copy(<<"x">>, 257),
-              ?assertMatch(
-                  {error, {invalid_input, _}},
-                  zed_pkg_client:get_version(Client, "acme", "kit", Overlong)
-              ),
-              ?assertMatch(
-                  {error, {missing_token, _}},
-                  zed_pkg_client:claim_org(Client, "acme")
-              ),
-              ?assertMatch(
-                  {error, {missing_token, _}},
-                  zed_pkg_client:restore(Client, "acme", "kit", "1.2.0")
-              ),
-              Meta = <<"{\\"manifest\\":{\\"package\\":{\\"org\\":\\"acme\\",\\"name\\":\\"kit\\",\\"version\\":\\"1.2.0\\"}}}">>,
-              ?assertMatch(
-                  {error, {missing_token, _}},
-                  zed_pkg_client:publish(Client, "acme", "kit", "1.2.0", Meta, <<"bytes">>)
-              ),
-              UnsafeToken = zed_pkg_client:with_token(Client, <<"token\\r\\nheader">>),
-              ?assertMatch(
-                  {error, {invalid_input, _}},
-                  zed_pkg_client:claim_org(UnsafeToken, "acme")
-              ),
-              BoundaryToken = binary:copy(<<"t">>, ?MAX_TOKEN_BYTES),
-              BoundaryClient = zed_pkg_client:with_token(Client, BoundaryToken),
-              ?assertEqual(?MAX_TOKEN_BYTES, byte_size(maps:get(token, BoundaryClient))),
-              OverlongToken = binary:copy(<<"t">>, ?MAX_TOKEN_BYTES + 1),
-              OverlongClient = zed_pkg_client:with_token(Client, OverlongToken),
-              ?assertMatch(
-                  {error, {invalid_input, _}},
-                  zed_pkg_client:claim_org(OverlongClient, "acme")
-              ),
-              MutatedControlClient = Client#{
-                  token => <<"token\\r\\nheader">>,
-                  token_error => undefined
-              },
-              ?assertMatch(
-                  {error, {invalid_input, _}},
-                  zed_pkg_client:restore(MutatedControlClient, "acme", "kit", "1.2.0")
-              ),
-              MutatedTypeClient = Client#{token => 42, token_error => undefined},
-              ?assertMatch(
-                  {error, {invalid_input, _}},
-                  zed_pkg_client:claim_org(MutatedTypeClient, "acme")
-              ),
-              ?assertMatch(
-                  {error, {invalid_configuration, _}},
-                  zed_pkg_client:publish(
-                      not_a_client,
-                      "acme",
-                      "kit",
-                      "1.2.0",
-                      Meta,
-                      <<"bytes">>
-                  )
-              ),
-              ?assertMatch(
-                  {error, {invalid_configuration, _}},
-                  zed_pkg_client:with_token(not_a_client, <<"token">>)
-              ).
-
-          artifact_url_policy_rejects_credentials_fragments_and_unsupported_schemes_test() ->''',
-              'hardening test function',
-          )
+          assert targets["repository"]["dir"] == "."
+          assert targets["golang"]["native"]["package"].endswith("/clients/go")
+          assert targets["golang"]["native"]["tag_format"] == "clients/go/v{version}"
+          assert targets["java"]["native"]["package"] == "tech.zpkg:zed-client"
+          print("zed-clients ten-language matrix is complete")
           PY
-          git diff --check
 
-      - name: Restore permanent CI and remove patch-only workflow files
-        run: |
-          git fetch origin main --depth=1
-          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
-          rm -f .github/workflows/den-1459-erlang-token-revalidation.yml
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: zed-clients
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+      - run: cargo test
+        working-directory: zed-clients/clients/rust
 
-      - name: Commit and push only reviewed product changes
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add clients/erlang/src/zed_pkg_client.erl \
-            clients/erlang/test/zed_pkg_client_hardening_tests.erl \
-            .github/workflows/ci.yml \
-            .github/workflows/den-1459-erlang-token-revalidation.yml
-          git commit -m 'DEN-1459 revalidate mutable Erlang bearer state'
-          git push origin HEAD:${{ github.head_ref }}
+  wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: zed-clients
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - run: cargo test
+        working-directory: zed-clients/clients/wasm
+      - run: cargo check --target wasm32-unknown-unknown
+        working-directory: zed-clients/clients/wasm
+
+  typescript:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - run: npm install && npm run build && npm test
+        working-directory: clients/typescript
+
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - run: python -m compileall -q zed_pkg_client && python -m unittest -v
+        working-directory: clients/python
+
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: "1.22"
+          cache-dependency-path: clients/go/go.mod
+      - run: go vet ./... && go test ./...
+        working-directory: clients/go
+
+  dart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260
+        with:
+          sdk: stable
+      - run: dart pub get && dart analyze && dart test
+        working-directory: clients/dart
+
+  gleam:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93
+        with:
+          otp-version: "27"
+          gleam-version: "1.16"
+          rebar3-version: "3"
+      - run: gleam test
+        working-directory: clients/gleam
+
+  erlang:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93
+        with:
+          otp-version: "27"
+          rebar3-version: "3"
+      - run: rebar3 compile && rebar3 eunit
+        working-directory: clients/erlang
+
+  java:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: java -version
+      - run: mvn --batch-mode --no-transfer-progress verify
+        working-directory: clients/java
+
+  swift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: swift --version
+      - run: swift test --parallel
+        working-directory: clients/swift

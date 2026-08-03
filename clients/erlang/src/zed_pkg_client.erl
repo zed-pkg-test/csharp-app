@@ -37,6 +37,7 @@
 -define(MAX_JSON_RESPONSE_BYTES, 16777216).
 -define(MAX_ERROR_BODY_BYTES, 16384).
 -define(MAX_PATH_SEGMENT_BYTES, 256).
+-define(MAX_TOKEN_BYTES, 8192).
 
 %% Hard ceiling on artifact downloads, matching the server's
 %% MAX_ARTIFACT_BYTES default (100 MiB); plus the slack added to a version's
@@ -74,21 +75,32 @@ with_token(Client, Token) when is_map(Client) ->
     case normalize_token(Token) of
         {ok, Normalized} -> Client#{token => Normalized, token_error => undefined};
         {error, Reason} -> Client#{token => undefined, token_error => Reason}
-    end.
+    end;
+with_token(_Client, _Token) ->
+    {error, {invalid_configuration, <<"client must be a map returned by new/1">>}}.
 
 normalize_token(undefined) ->
     {ok, undefined};
-normalize_token(Value) ->
+normalize_token(Value) when is_binary(Value); is_list(Value); is_atom(Value) ->
     Token = trim_binary(text(Value)),
     case Token of
         <<>> ->
             {ok, undefined};
+        _ when byte_size(Token) > ?MAX_TOKEN_BYTES ->
+            {error,
+                {invalid_input,
+                    <<"token must not exceed 8192 UTF-8 bytes">>}};
         _ ->
             case has_control(Token) of
-                true -> {error, {invalid_input, <<"token must not contain control characters">>}};
+                true ->
+                    {error,
+                        {invalid_input,
+                            <<"token must not contain control characters">>}};
                 false -> {ok, Token}
             end
-    end.
+    end;
+normalize_token(_) ->
+    {error, {invalid_input, <<"token must be text">>}}.
 
 validate_base(Value) ->
     Base = trim_binary(text(Value)),
@@ -621,18 +633,25 @@ request_json(Client, Method, Path, Body, Authorized) ->
         BaseError -> BaseError
     end.
 
-auth_headers(Client, true) ->
+auth_headers(Client, true) when is_map(Client) ->
     case maps:get(token_error, Client, undefined) of
         undefined ->
-            case maps:get(token, Client, undefined) of
-                undefined ->
+            %% Client maps remain transparent for compatibility, so callers can mutate
+            %% them after construction. Revalidate the live token on every authenticated
+            %% operation instead of trusting only with_token/2 state.
+            case normalize_token(maps:get(token, Client, undefined)) of
+                {ok, undefined} ->
                     {error,
                         {missing_token,
                             <<"authenticated registry operation requires a nonblank bearer token">>}};
-                Token -> {ok, [{"authorization", "Bearer " ++ binary_to_list(Token)}]}
+                {ok, Token} ->
+                    {ok, [{"authorization", "Bearer " ++ binary_to_list(Token)}]};
+                {error, Reason} -> {error, Reason}
             end;
         TokenError -> {error, TokenError}
     end;
+auth_headers(_Client, true) ->
+    {error, {invalid_configuration, <<"client must be a map returned by new/1">>}};
 auth_headers(_Client, false) ->
     {ok, []}.
 
