@@ -1,0 +1,255 @@
+name: repair Erlang hardening
+
+on:
+  push:
+    branches:
+      - alexanderdmills/den-1403-erlang-client-hardening
+    paths:
+      - .github/workflows/repair-erlang-hardening.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: alexanderdmills/den-1403-erlang-client-hardening
+          persist-credentials: true
+          show-progress: false
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93
+        with:
+          otp-version: "27"
+          rebar3-version: "3"
+      - name: Correct nested result handling and publish comparisons
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path('clients/erlang/src/zed_pkg_client.erl')
+          source = source_path.read_text(encoding='utf-8')
+
+          old_atomic = '''            case file:open(Temp, [write, binary, raw, exclusive]) of
+                          {ok, Handle} ->
+                              Result =
+                                  case file:write(Handle, Body) of
+                                      ok ->
+                                          case file:sync(Handle) of
+                                              ok -> ok;
+                                              Error -> Error
+                                          end;
+                                      Error -> Error
+                                  end,
+                              CloseResult = file:close(Handle),
+                              case {Result, CloseResult} of
+                                  {ok, ok} ->
+                                      case file:rename(Temp, DestPath) of
+                                          ok -> ok;
+                                          Error ->
+                                              _ = file:delete(Temp),
+                                              Error
+                                      end;
+                                  {Error, _} ->
+                                      _ = file:delete(Temp),
+                                      Error;
+                                  {ok, Error} ->
+                                      _ = file:delete(Temp),
+                                      Error
+                              end;
+                          Error -> Error
+                      end;
+          '''
+          new_atomic = '''            case file:open(Temp, [write, binary, raw, exclusive]) of
+                          {ok, Handle} ->
+                              WriteResult =
+                                  case file:write(Handle, Body) of
+                                      ok -> file:sync(Handle);
+                                      WriteError -> WriteError
+                                  end,
+                              CloseResult = file:close(Handle),
+                              case WriteResult of
+                                  ok ->
+                                      case CloseResult of
+                                          ok ->
+                                              case file:rename(Temp, DestPath) of
+                                                  ok -> ok;
+                                                  RenameError ->
+                                                      _ = file:delete(Temp),
+                                                      RenameError
+                                              end;
+                                          CloseError ->
+                                              _ = file:delete(Temp),
+                                              CloseError
+                                      end;
+                                  WriteError ->
+                                      _ = file:delete(Temp),
+                                      WriteError
+                              end;
+                          OpenError -> OpenError
+                      end;
+          '''
+          if source.count(old_atomic) != 1:
+              raise SystemExit(f'atomic-write block: expected one match, found {source.count(old_atomic)}')
+          source = source.replace(old_atomic, new_atomic, 1)
+
+          old_publish = '''                            case decode_publish_coordinate(MetaJson) of
+                                  {ok, {MetaOrg, MetaName, MetaVersion}}
+                                  when MetaOrg =:= text(Org),
+                                       MetaName =:= text(Name),
+                                       MetaVersion =:= text(Version) ->
+                                      case client_base(Client) of
+                                          {ok, Base} ->
+                                              Boundary =
+                                                  <<"zedpkg",
+                                                      (binary:encode_hex(
+                                                          crypto:strong_rand_bytes(16), lowercase
+                                                      ))/binary>>,
+                                              Body = multipart_body(
+                                                  Boundary,
+                                                  text(MetaJson),
+                                                  <<"artifact.tar.gz">>,
+                                                  Artifact
+                                              ),
+                                              ContentType =
+                                                  <<"multipart/form-data; boundary=", Boundary/binary>>,
+                                              Url = <<Base/binary, Path/binary>>,
+                                              case http_request(
+                                                  Client, put, Url, Headers, {ContentType, Body}
+                                              ) of
+                                                  {ok, Status, ResponseBody}
+                                                  when Status >= 200, Status < 300 ->
+                                                      decode_success_json(ResponseBody);
+                                                  {ok, Status, ResponseBody} ->
+                                                      {error, decode_api_error(Status, ResponseBody)};
+                                                  Error -> Error
+                                              end;
+                                          Error -> Error
+                                      end;
+                                  {ok, _} ->
+                                      {error,
+                                          {invalid_input,
+                                              <<"publish route and meta.manifest.package coordinates differ">>}};
+                                  Error -> Error
+                              end
+          '''
+          new_publish = '''                            ExpectedOrg = text(Org),
+                              ExpectedName = text(Name),
+                              ExpectedVersion = text(Version),
+                              case decode_publish_coordinate(MetaJson) of
+                                  {ok, {MetaOrg, MetaName, MetaVersion}} ->
+                                      case {
+                                          MetaOrg =:= ExpectedOrg,
+                                          MetaName =:= ExpectedName,
+                                          MetaVersion =:= ExpectedVersion
+                                      } of
+                                          {true, true, true} ->
+                                              case client_base(Client) of
+                                                  {ok, Base} ->
+                                                      Boundary =
+                                                          <<"zedpkg",
+                                                              (binary:encode_hex(
+                                                                  crypto:strong_rand_bytes(16), lowercase
+                                                              ))/binary>>,
+                                                      Body = multipart_body(
+                                                          Boundary,
+                                                          text(MetaJson),
+                                                          <<"artifact.tar.gz">>,
+                                                          Artifact
+                                                      ),
+                                                      ContentType =
+                                                          <<"multipart/form-data; boundary=", Boundary/binary>>,
+                                                      Url = <<Base/binary, Path/binary>>,
+                                                      case http_request(
+                                                          Client,
+                                                          put,
+                                                          Url,
+                                                          Headers,
+                                                          {ContentType, Body}
+                                                      ) of
+                                                          {ok, Status, ResponseBody}
+                                                          when Status >= 200, Status < 300 ->
+                                                              decode_success_json(ResponseBody);
+                                                          {ok, Status, ResponseBody} ->
+                                                              {error,
+                                                                  decode_api_error(Status, ResponseBody)};
+                                                          RequestError -> RequestError
+                                                      end;
+                                                  BaseError -> BaseError
+                                              end;
+                                          _ ->
+                                              {error,
+                                                  {invalid_input,
+                                                      <<"publish route and meta.manifest.package coordinates differ">>}}
+                                      end;
+                                  DecodeError -> DecodeError
+                              end
+          '''
+          if source.count(old_publish) != 1:
+              raise SystemExit(f'publish block: expected one match, found {source.count(old_publish)}')
+          source_path.write_text(source.replace(old_publish, new_publish, 1), encoding='utf-8')
+
+          test_path = Path('clients/erlang/test/zed_pkg_client_tests.erl')
+          tests = test_path.read_text(encoding='utf-8').rstrip()
+          addition = '''
+
+          hostile_inputs_and_missing_token_fail_before_transport_test() ->
+              {ok, Client} = zed_pkg_client:new("http://127.0.0.1:9"),
+              ?assertMatch(
+                  {error, {invalid_input, _}},
+                  zed_pkg_client:get_package(Client, "..", "kit")
+              ),
+              ?assertMatch(
+                  {error, {invalid_input, _}},
+                  zed_pkg_client:get_version(Client, "acme", "kit", "line\\nbreak")
+              ),
+              ?assertMatch(
+                  {error, {missing_token, _}},
+                  zed_pkg_client:claim_org(Client, "acme")
+              ),
+              ?assertMatch(
+                  {error, {missing_token, _}},
+                  zed_pkg_client:restore(Client, "acme", "kit", "1.2.0")
+              ).
+
+          malformed_and_mismatched_publish_meta_fail_before_transport_test() ->
+              {ok, Client0} = zed_pkg_client:new("http://127.0.0.1:9"),
+              Client = zed_pkg_client:with_token(Client0, <<"token">>),
+              ?assertMatch(
+                  {error, {invalid_input, <<"publish metadata is invalid JSON">>}},
+                  zed_pkg_client:publish(
+                      Client, "acme", "kit", "1.2.0", <<"not-json">>, <<"bytes">>
+                  )
+              ),
+              Mismatched =
+                  <<"{\\"manifest\\":{\\"package\\":{\\"org\\":\\"other\\","
+                      "\\"name\\":\\"kit\\",\\"version\\":\\"1.2.0\\"}}}">>,
+              ?assertMatch(
+                  {error, {invalid_input, _}},
+                  zed_pkg_client:publish(
+                      Client, "acme", "kit", "1.2.0", Mismatched, <<"bytes">>
+                  )
+              ).
+
+          uppercase_sha256_is_accepted_test() ->
+              Good = binary:encode_hex(crypto:hash(sha256, <<"zed">>), uppercase),
+              ?assertEqual(ok, zed_pkg_client:verify_sha256(<<"zed">>, Good)).
+          '''
+          if 'malformed_and_mismatched_publish_meta_fail_before_transport_test' in tests:
+              raise SystemExit('new Erlang regressions already exist')
+          test_path.write_text(tests + addition, encoding='utf-8')
+          PY
+          rebar3 compile
+          rebar3 eunit
+        working-directory: clients/erlang
+      - name: Commit and push exact validated changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add clients/erlang/src/zed_pkg_client.erl clients/erlang/test/zed_pkg_client_tests.erl
+          git commit -m 'DEN-1403 fix Erlang result handling and adversarial tests'
+          git push origin HEAD:alexanderdmills/den-1403-erlang-client-hardening
