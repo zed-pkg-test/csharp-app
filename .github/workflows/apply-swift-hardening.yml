@@ -1,0 +1,358 @@
+name: apply Swift hardening
+
+on:
+  push:
+    branches:
+      - alexanderdmills/den-1403-native-client-hardening
+    paths:
+      - .github/workflows/apply-swift-hardening.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: alexanderdmills/den-1403-native-client-hardening
+          persist-credentials: true
+          show-progress: false
+
+      - name: Apply asserted Swift transport and input corrections
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              source = path.read_text(encoding='utf-8')
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              path.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+          production = Path('clients/swift/Sources/ZedClient/ZedClient.swift')
+          replace_once(
+              production,
+              '''        let code = (try? decoder.decode(ErrorEnvelope.self, from: data).code)
+                  .flatMap(Self.normalizeOptional)
+                  ?? "http_\\(status)"
+          ''',
+              '''        let envelope = try? decoder.decode(ErrorEnvelope.self, from: data)
+              let code = envelope
+                  .flatMap { Self.normalizeOptional($0.code) }
+                  ?? "http_\\(status)"
+          ''',
+              'Swift optional error-code flattening',
+          )
+          replace_once(
+              production,
+              '''    private func downloadURL(_ version: VersionMetadata) throws -> URL {
+              let raw = Self.normalizeOptional(version.downloadURL)
+              if raw == nil || raw?.contains("://") == false {
+                  return try url(path: Self.artifactPath(version.sha256))
+              }
+              guard let raw,
+                    let components = URLComponents(string: raw),
+                    let scheme = components.scheme?.lowercased(),
+                    let host = components.host?.lowercased(),
+                    !host.isEmpty,
+                    components.user == nil,
+                    components.password == nil,
+                    components.fragment == nil,
+                    let value = components.url
+              else {
+                  throw ZedClientError.invalidConfiguration("download_url is invalid")
+              }
+              let loopback = host == "localhost" || host == "127.0.0.1" || host == "::1"
+              let allowed = scheme == "https"
+                  || (scheme == "http" && (loopback || baseURL.scheme?.lowercased() == "http"))
+              guard allowed else {
+                  throw ZedClientError.invalidConfiguration(
+                      "download_url must use HTTPS; HTTP is allowed only for loopback or an HTTP development registry"
+                  )
+              }
+              return value
+          }
+          ''',
+              '''    private func downloadURL(_ version: VersionMetadata) throws -> URL {
+              guard let raw = Self.normalizeOptional(version.downloadURL) else {
+                  return try url(path: try Self.artifactPath(version.sha256))
+              }
+
+              let candidate: URL
+              if raw.contains("://") {
+                  guard let absolute = URL(string: raw) else {
+                      throw ZedClientError.invalidConfiguration("download_url is invalid")
+                  }
+                  candidate = absolute
+              } else {
+                  try Self.validateRelativeDownloadPath(raw)
+                  guard let base = URL(string: baseURL.absoluteString + "/"),
+                        let relative = URL(string: raw, relativeTo: base)?.absoluteURL
+                  else {
+                      throw ZedClientError.invalidConfiguration("download_url is invalid")
+                  }
+                  candidate = relative
+              }
+
+              guard let components = URLComponents(
+                  url: candidate,
+                  resolvingAgainstBaseURL: false
+              ),
+                    let scheme = components.scheme?.lowercased(),
+                    let host = components.host?.lowercased(),
+                    !host.isEmpty,
+                    components.user == nil,
+                    components.password == nil,
+                    components.fragment == nil,
+                    let value = components.url
+              else {
+                  throw ZedClientError.invalidConfiguration("download_url is invalid")
+              }
+              let loopback = host == "localhost" || host == "::1" || host.hasPrefix("127.")
+              let allowed = scheme == "https"
+                  || (scheme == "http" && (loopback || baseURL.scheme?.lowercased() == "http"))
+              guard allowed else {
+                  throw ZedClientError.invalidConfiguration(
+                      "download_url must use HTTPS; HTTP is allowed only for loopback or an HTTP development registry"
+                  )
+              }
+              return value
+          }
+          ''',
+              'Swift relative artifact URL handling',
+          )
+          replace_once(
+              production,
+              '''    private static func validateBaseURL(_ input: String) throws -> URL {
+              let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+              guard var components = URLComponents(string: trimmed),
+          ''',
+              '''    private static func validateRawPath(
+              _ raw: String,
+              name: String
+          ) throws {
+              guard let schemeRange = raw.range(of: "://") else { return }
+              let authorityStart = schemeRange.upperBound
+              guard let pathStart = raw[authorityStart...].firstIndex(of: "/") else { return }
+              let suffix = raw[pathStart...]
+              let pathEnd = suffix.firstIndex(where: { $0 == "?" || $0 == "#" })
+                  ?? raw.endIndex
+              for (index, encoded) in raw[pathStart..<pathEnd]
+                  .split(separator: "/", omittingEmptySubsequences: true)
+                  .enumerated()
+              {
+                  guard let decoded = String(encoded).removingPercentEncoding else {
+                      throw ZedClientError.invalidConfiguration(
+                          "\\(name) contains invalid percent encoding"
+                      )
+                  }
+                  _ = try validateSegmentText(
+                      decoded,
+                      name: "\\(name) segment \\(index + 1)"
+                  )
+                  guard !decoded.contains("/"), !decoded.contains("\\\\") else {
+                      throw ZedClientError.invalidConfiguration(
+                          "\\(name) segments must not contain encoded separators"
+                      )
+                  }
+              }
+          }
+
+          private static func validateRelativeDownloadPath(_ raw: String) throws {
+              let pathEnd = raw.firstIndex(where: { $0 == "?" || $0 == "#" })
+                  ?? raw.endIndex
+              for (index, encoded) in raw[..<pathEnd]
+                  .split(separator: "/", omittingEmptySubsequences: true)
+                  .enumerated()
+              {
+                  guard let decoded = String(encoded).removingPercentEncoding else {
+                      throw ZedClientError.invalidConfiguration(
+                          "download_url contains invalid percent encoding"
+                      )
+                  }
+                  _ = try validateSegmentText(
+                      decoded,
+                      name: "download_url segment \\(index + 1)"
+                  )
+                  guard !decoded.contains("/"), !decoded.contains("\\\\") else {
+                      throw ZedClientError.invalidConfiguration(
+                          "download_url segments must not contain encoded separators"
+                      )
+                  }
+              }
+          }
+
+          private static func validateSegmentText(
+              _ value: String,
+              name: String
+          ) throws -> String {
+              let checked = try requireText(value, name: name)
+              guard checked != ".",
+                    checked != "..",
+                    checked.utf8.count <= maxSegmentBytes,
+                    !checked.unicodeScalars.contains(where: {
+                        CharacterSet.controlCharacters.contains($0)
+                    })
+              else {
+                  throw ZedClientError.invalidConfiguration(
+                      "\\(name) must not be a dot segment, exceed \\(maxSegmentBytes) UTF-8 bytes, or contain control characters"
+                  )
+              }
+              return checked
+          }
+
+          private static func validateBaseURL(_ input: String) throws -> URL {
+              let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+              try validateRawPath(trimmed, name: "registry URL path")
+              guard var components = URLComponents(string: trimmed),
+          ''',
+              'Swift raw base path validation',
+          )
+          replace_once(
+              production,
+              '''    private static func artifactPath(_ sha256: String) -> String {
+              let encoded = (try? encodeSegment(sha256, name: "sha256")) ?? ""
+              return "/v1/artifacts/\\(encoded)"
+          }
+
+          private static func encodeSegment(_ value: String, name: String) throws -> String {
+              let checked = try requireText(value, name: name)
+              guard checked.utf8.count <= maxSegmentBytes,
+                    !checked.unicodeScalars.contains(where: { $0.value == 0 })
+              else {
+                  throw ZedClientError.invalidConfiguration("\\(name) is too large or contains NUL")
+              }
+          ''',
+              '''    private static func artifactPath(_ sha256: String) throws -> String {
+              let encoded = try encodeSegment(sha256, name: "sha256")
+              return "/v1/artifacts/\\(encoded)"
+          }
+
+          private static func encodeSegment(_ value: String, name: String) throws -> String {
+              let checked = try validateSegmentText(value, name: name)
+          ''',
+              'Swift opaque segment validation',
+          )
+          replace_once(
+              production,
+              '''        return PackageCoordinate(
+              org: try requireText(org, name: "meta.manifest.package.org"),
+              name: try requireText(name, name: "meta.manifest.package.name"),
+              version: try requireText(version, name: "meta.manifest.package.version")
+          )
+          ''',
+              '''        return PackageCoordinate(
+              org: try validateSegmentText(
+                  org,
+                  name: "meta.manifest.package.org"
+              ),
+              name: try validateSegmentText(
+                  name,
+                  name: "meta.manifest.package.name"
+              ),
+              version: try validateSegmentText(
+                  version,
+                  name: "meta.manifest.package.version"
+              )
+          )
+          ''',
+              'Swift publish-coordinate validation',
+          )
+
+          tests = Path('clients/swift/Tests/ZedClientTests/ZedClientTests.swift')
+          replace_once(
+              tests,
+              '''            "https://registry.example#fragment",
+              ] {
+          ''',
+              '''            "https://registry.example#fragment",
+                  "https://registry.example/../admin",
+                  "https://registry.example/%2e%2e/admin",
+                  "https://registry.example/a%2Fb",
+              ] {
+          ''',
+              'Swift hostile base URL cases',
+          )
+          replace_once(
+              tests,
+              '''    func testAuthenticatedOperationsRequireTokenBeforeTransport() async throws {
+          ''',
+              '''    func testRejectsHostileSegmentsBeforeTransport() async throws {
+              let client = try makeClient()
+              for value in ["", "   ", ".", "..", "line\\nbreak"] {
+                  do {
+                      _ = try await client.getPackage(org: value, name: "kit")
+                      XCTFail("expected segment rejection for \\(value.debugDescription)")
+                  } catch let error as ZedClientError {
+                      guard case .invalidConfiguration = error else {
+                          return XCTFail("unexpected error: \\(error)")
+                      }
+                  }
+              }
+          }
+
+          func testRelativeDownloadURLPreservesGatewayAndUppercaseDigest() async throws {
+              let artifact = Data("abc".utf8)
+              let recorder = RequestRecorder()
+              StubURLProtocol.handler = { request in
+                  recorder.append(request)
+                  return StubResponse(status: 200, body: artifact)
+              }
+              let client = try makeClient(basePath: "/gateway")
+              let version = VersionMetadata(
+                  org: "acme",
+                  name: "kit",
+                  version: "1.0.0",
+                  sha256: "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD",
+                  size: Int64(artifact.count),
+                  format: "tar.gz",
+                  vcsTag: "v1.0.0",
+                  vcsCommit: nil,
+                  downloadURL: "artifacts/hash",
+                  publishedAt: "now",
+                  yanked: false
+              )
+              XCTAssertEqual(try await client.downloadArtifact(version), artifact)
+              XCTAssertEqual(recorder.snapshot().first?.url?.path, "/gateway/artifacts/hash")
+          }
+
+          func testBlankStructuredErrorCodeFallsBackToHTTPStatus() async throws {
+              StubURLProtocol.handler = { _ in
+                  StubResponse(
+                      status: 409,
+                      body: Data(#"{"code":"   ","message":"remote detail"}"#.utf8)
+                  )
+              }
+              let client = try makeClient(token: "token")
+              do {
+                  _ = try await client.claimOrg(slug: "acme")
+                  XCTFail("expected API error")
+              } catch let error as ZedClientError {
+                  guard case let .api(status, code, _) = error else {
+                      return XCTFail("unexpected error: \\(error)")
+                  }
+                  XCTAssertEqual(status, 409)
+                  XCTAssertEqual(code, "http_409")
+              }
+          }
+
+          func testAuthenticatedOperationsRequireTokenBeforeTransport() async throws {
+          ''',
+              'Swift hardening regression tests',
+          )
+          PY
+          git diff --check
+
+      - name: Commit the asserted Swift patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add clients/swift/Sources/ZedClient/ZedClient.swift \
+            clients/swift/Tests/ZedClientTests/ZedClientTests.swift
+          git commit -m 'DEN-1403 harden Swift URL and coordinate handling'
+          git push origin HEAD:alexanderdmills/den-1403-native-client-hardening
