@@ -2,11 +2,12 @@
 //! `zed-interfaces`, so wire models and paths stay aligned with the contract.
 
 use std::fmt;
-use std::fs;
-use std::io::Read;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use zed_interfaces::registry::{
@@ -20,15 +21,75 @@ const SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'~');
 
-fn encode_segment(segment: &str) -> String {
-    utf8_percent_encode(segment, SEGMENT).to_string()
-}
-
 const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_ARTIFACT_BYTES: u64 = 100 * 1024 * 1024;
 const DOWNLOAD_SLACK: u64 = 1024 * 1024;
+const MAX_SEGMENT_BYTES: usize = 256;
 pub const DEFAULT_MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_ERROR_BODY_BYTES: u64 = 16 * 1024;
+
+fn invalid_input(message: impl Into<String>) -> Error {
+    Error::InvalidInput(message.into())
+}
+
+fn validate_segment<'a>(segment: &'a str, name: &str) -> Result<&'a str> {
+    if segment.trim().is_empty() {
+        return Err(invalid_input(format!("{name} must not be blank")));
+    }
+    if matches!(segment, "." | "..") {
+        return Err(invalid_input(format!("{name} must not be a dot segment")));
+    }
+    if segment.len() > MAX_SEGMENT_BYTES {
+        return Err(invalid_input(format!(
+            "{name} exceeds {MAX_SEGMENT_BYTES} UTF-8 bytes"
+        )));
+    }
+    if segment.chars().any(char::is_control) {
+        return Err(invalid_input(format!(
+            "{name} must not contain control characters"
+        )));
+    }
+    Ok(segment)
+}
+
+fn encode_segment(segment: &str) -> String {
+    match segment {
+        "." => "%2E".to_string(),
+        ".." => "%2E%2E".to_string(),
+        _ => utf8_percent_encode(segment, SEGMENT).to_string(),
+    }
+}
+
+fn checked_segment(segment: &str, name: &str) -> Result<String> {
+    validate_segment(segment, name)?;
+    Ok(encode_segment(segment))
+}
+
+fn validate_raw_base_path(raw: &str) -> Result<()> {
+    let scheme_end = raw.find("://").ok_or(Error::InvalidBaseUrl)?;
+    let authority_start = scheme_end + 3;
+    let Some(relative_path_start) = raw[authority_start..].find('/') else {
+        return Ok(());
+    };
+    let path_start = authority_start + relative_path_start;
+    let path_end = raw[path_start..]
+        .find(['?', '#'])
+        .map_or(raw.len(), |offset| path_start + offset);
+    for (index, encoded) in raw[path_start..path_end].split('/').enumerate() {
+        if encoded.is_empty() {
+            continue;
+        }
+        let decoded = percent_decode_str(encoded)
+            .decode_utf8()
+            .map_err(|_| Error::InvalidBaseUrl)?;
+        validate_segment(&decoded, &format!("registry path segment {}", index + 1))
+            .map_err(|_| Error::InvalidBaseUrl)?;
+        if decoded.contains('/') || decoded.contains('\\') {
+            return Err(Error::InvalidBaseUrl);
+        }
+    }
+    Ok(())
+}
 
 fn download_limit(size: u64) -> u64 {
     if size > 0 {
@@ -50,6 +111,12 @@ pub enum Error {
     },
     #[error("invalid registry base URL")]
     InvalidBaseUrl,
+    #[error("invalid client input: {0}")]
+    InvalidInput(String),
+    #[error("authenticated registry operation requires a nonblank bearer token")]
+    MissingToken,
+    #[error("artifact exceeded {limit} bytes")]
+    ArtifactTooLarge { limit: u64 },
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("io error: {0}")]
@@ -83,7 +150,9 @@ impl fmt::Debug for Client {
 impl Client {
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
         let raw = base_url.into();
-        let mut parsed = reqwest::Url::parse(raw.trim()).map_err(|_| Error::InvalidBaseUrl)?;
+        let trimmed = raw.trim();
+        validate_raw_base_path(trimmed)?;
+        let mut parsed = reqwest::Url::parse(trimmed).map_err(|_| Error::InvalidBaseUrl)?;
         if !matches!(parsed.scheme(), "http" | "https")
             || parsed.host_str().is_none()
             || !parsed.username().is_empty()
@@ -119,8 +188,12 @@ impl Client {
 
     #[must_use]
     pub fn with_max_response_bytes(mut self, limit: u64) -> Self {
-        self.max_response_bytes = limit;
+        self.max_response_bytes = limit.max(1);
         self
+    }
+
+    fn require_token(&self) -> Result<&str> {
+        self.token.as_deref().ok_or(Error::MissingToken)
     }
 
     fn url(&self, path: &str) -> String {
@@ -163,11 +236,18 @@ impl Client {
             }
         };
         match serde_json::from_str::<ApiError>(&body) {
-            Ok(error) => Err(Error::Api {
-                status,
-                code: error.code,
-                message: error.message,
-            }),
+            Ok(error) => {
+                let code = if error.code.trim().is_empty() {
+                    format!("http_{status}")
+                } else {
+                    error.code.trim().to_string()
+                };
+                Err(Error::Api {
+                    status,
+                    code,
+                    message: error.message,
+                })
+            }
             Err(_) => Err(Error::Api {
                 status,
                 code: format!("http_{status}"),
@@ -183,27 +263,20 @@ impl Client {
             .map_err(|error| Error::Other(format!("invalid registry response: {error}")))
     }
 
-    fn bearer(
-        &self,
-        request: reqwest::blocking::RequestBuilder,
-    ) -> reqwest::blocking::RequestBuilder {
-        match &self.token {
-            Some(token) => request.bearer_auth(token),
-            None => request,
-        }
-    }
-
     pub fn get_package(&self, org: &str, name: &str) -> Result<PackageMetadata> {
-        let path = registry::package_path(&encode_segment(org), &encode_segment(name));
+        let path = registry::package_path(
+            &checked_segment(org, "org")?,
+            &checked_segment(name, "name")?,
+        );
         let response = self.http.get(self.url(&path)).send()?;
         self.json(response)
     }
 
     pub fn get_version(&self, org: &str, name: &str, version: &str) -> Result<VersionMetadata> {
         let path = registry::version_path(
-            &encode_segment(org),
-            &encode_segment(name),
-            &encode_segment(version),
+            &checked_segment(org, "org")?,
+            &checked_segment(name, "name")?,
+            &checked_segment(version, "version")?,
         );
         let response = self.http.get(self.url(&path)).send()?;
         self.json(response)
@@ -219,27 +292,48 @@ impl Client {
     }
 
     pub fn claim_org(&self, slug: &str) -> Result<ClaimOrgResponse> {
-        let request = self
+        validate_segment(slug, "slug")?;
+        let token = self.require_token()?;
+        let response = self
             .http
             .post(self.url(&registry::orgs_path()))
+            .bearer_auth(token)
             .json(&ClaimOrgRequest {
                 slug: slug.to_string(),
-            });
-        let response = self.bearer(request).send()?;
+            })
+            .send()?;
         self.json(response)
     }
 
-    pub fn yank(&self, org: &str, name: &str, version: &str, yanked: bool) -> Result<YankResponse> {
-        let request = self
+    pub fn set_yanked(
+        &self,
+        org: &str,
+        name: &str,
+        version: &str,
+        yanked: bool,
+    ) -> Result<YankResponse> {
+        let path = registry::yank_path(
+            &checked_segment(org, "org")?,
+            &checked_segment(name, "name")?,
+            &checked_segment(version, "version")?,
+        );
+        let token = self.require_token()?;
+        let response = self
             .http
-            .post(self.url(&registry::yank_path(
-                &encode_segment(org),
-                &encode_segment(name),
-                &encode_segment(version),
-            )))
-            .json(&YankRequest { yanked });
-        let response = self.bearer(request).send()?;
+            .post(self.url(&path))
+            .bearer_auth(token)
+            .json(&YankRequest { yanked })
+            .send()?;
         self.json(response)
+    }
+
+    /// Compatibility form retained for existing callers.
+    pub fn yank(&self, org: &str, name: &str, version: &str, yanked: bool) -> Result<YankResponse> {
+        self.set_yanked(org, name, version, yanked)
+    }
+
+    pub fn restore(&self, org: &str, name: &str, version: &str) -> Result<YankResponse> {
+        self.set_yanked(org, name, version, false)
     }
 
     fn allowed_download_url(&self, raw: &str) -> Result<reqwest::Url> {
@@ -249,6 +343,12 @@ impl Client {
             return Err(Error::Other(
                 "download URL contains credentials or fragment".to_string(),
             ));
+        }
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err(Error::Other(format!(
+                "refusing artifact download over `{}`",
+                url.scheme()
+            )));
         }
         let loopback = matches!(url.host_str(), Some("localhost"))
             || url
@@ -267,10 +367,9 @@ impl Client {
     fn resolve_download_url(&self, raw: &str, sha256: &str) -> Result<reqwest::Url> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            return reqwest::Url::parse(
-                &self.url(&registry::artifact_path(&encode_segment(sha256))),
-            )
-            .map_err(|_| Error::InvalidBaseUrl);
+            let sha256 = checked_segment(sha256, "sha256")?;
+            return reqwest::Url::parse(&self.url(&registry::artifact_path(&sha256)))
+                .map_err(|_| Error::InvalidBaseUrl);
         }
         if let Ok(absolute) = reqwest::Url::parse(trimmed) {
             return self.allowed_download_url(absolute.as_str());
@@ -283,45 +382,106 @@ impl Client {
         self.allowed_download_url(resolved.as_str())
     }
 
+    fn write_atomic(dest: &Path, bytes: &[u8]) -> Result<()> {
+        let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let name = dest
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("artifact");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temporary = parent.join(format!(
+            ".{name}.zed-{}-{nonce}.tmp",
+            std::process::id()
+        ));
+        let result = (|| -> Result<()> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary, dest)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
+
     pub fn download_artifact(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
         let url = self.resolve_download_url(&version.download_url, &version.sha256)?;
         // The shared HTTP client refuses redirects. No bearer token is attached:
         // download_url may be a third-party presigned URL.
         let response = self.check(self.http.get(url).send()?)?;
         let limit = download_limit(version.size);
-        let bytes = Self::read_capped(response, limit, "artifact")?;
+        let bytes = Self::read_capped(response, limit, "artifact")
+            .map_err(|_| Error::ArtifactTooLarge { limit })?;
         verify_sha256(&bytes, &version.sha256)?;
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(dest, bytes)?;
-        Ok(())
+        Self::write_atomic(dest, &bytes)
     }
 
     pub fn publish(&self, meta: &PublishMeta, artifact: &Path) -> Result<PublishResponse> {
+        let token = self.require_token()?;
         let package = &meta.manifest.package;
+        validate_segment(&package.org, "meta.manifest.package.org")?;
+        validate_segment(&package.name, "meta.manifest.package.name")?;
+        validate_segment(&package.version, "meta.manifest.package.version")?;
+        let metadata = fs::metadata(artifact)?;
+        if !metadata.is_file() {
+            return Err(invalid_input("artifact must be a regular file"));
+        }
+        if metadata.len() > MAX_ARTIFACT_BYTES {
+            return Err(Error::ArtifactTooLarge {
+                limit: MAX_ARTIFACT_BYTES,
+            });
+        }
+        let filename = safe_filename(&format!(
+            "{}-{}-{}.tar.gz",
+            package.org, package.name, package.version
+        ));
+        let part = reqwest::blocking::multipart::Part::file(artifact)?.file_name(filename);
         let form = reqwest::blocking::multipart::Form::new()
             .text(
                 registry::PUBLISH_META_FIELD,
                 serde_json::to_string(meta).map_err(|error| Error::Other(error.to_string()))?,
             )
-            .file(registry::PUBLISH_ARTIFACT_FIELD, artifact)?;
-        let request = self
+            .part(registry::PUBLISH_ARTIFACT_FIELD, part);
+        let response = self
             .http
             .put(self.url(&registry::version_path(
-                &encode_segment(&package.org),
-                &encode_segment(&package.name),
-                &encode_segment(&package.version),
+                &checked_segment(&package.org, "meta.manifest.package.org")?,
+                &checked_segment(&package.name, "meta.manifest.package.name")?,
+                &checked_segment(&package.version, "meta.manifest.package.version")?,
             )))
-            .multipart(form);
-        let response = self.bearer(request).send()?;
+            .bearer_auth(token)
+            .multipart(form)
+            .send()?;
         self.json(response)
     }
 }
 
+fn safe_filename(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 pub fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
     let actual = hex::encode(Sha256::digest(bytes));
-    if actual != expected {
+    if !actual.eq_ignore_ascii_case(expected) {
         return Err(Error::Sha256Mismatch {
             expected: expected.to_string(),
             actual,
@@ -335,10 +495,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sha_verification() {
+    fn sha_verification_is_case_insensitive() {
         let bytes = b"zed";
         let good = hex::encode(Sha256::digest(bytes));
-        assert!(verify_sha256(bytes, &good).is_ok());
+        assert!(verify_sha256(bytes, &good.to_uppercase()).is_ok());
         assert!(matches!(
             verify_sha256(bytes, "00"),
             Err(Error::Sha256Mismatch { .. })
@@ -363,6 +523,9 @@ mod tests {
             "https://user:secret@registry.test",
             "https://registry.test?tenant=one",
             "https://registry.test#fragment",
+            "https://registry.test/../admin",
+            "https://registry.test/%2e%2e/admin",
+            "https://registry.test/a%2Fb",
         ] {
             assert!(Client::new(invalid).is_err(), "accepted {invalid}");
         }
@@ -377,6 +540,27 @@ mod tests {
         };
         assert_eq!(error.to_string(), "registry error 502: http_502");
         assert!(!error.to_string().contains("provider-secret"));
+    }
+
+    #[test]
+    fn hostile_segments_and_missing_tokens_fail_before_transport() {
+        let client = Client::new("http://127.0.0.1:9").unwrap();
+        for value in ["", "   ", ".", "..", "line\nbreak"] {
+            assert!(matches!(
+                client.get_package(value, "kit"),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+        assert_eq!(encode_segment(".."), "%2E%2E");
+        assert!(matches!(client.claim_org("acme"), Err(Error::MissingToken)));
+        assert!(matches!(
+            client.yank("acme", "kit", "1.2.0", true),
+            Err(Error::MissingToken)
+        ));
+        assert!(matches!(
+            client.restore("acme", "kit", "1.2.0"),
+            Err(Error::MissingToken)
+        ));
     }
 
     #[test]
@@ -414,7 +598,6 @@ mod tests {
 #[cfg(test)]
 mod download_tests {
     use super::*;
-    use std::io::Write as _;
     use std::net::TcpListener;
     use std::sync::mpsc;
 
@@ -466,7 +649,7 @@ mod download_tests {
     }
 
     #[test]
-    fn download_omits_auth_resolves_relative_and_verifies_sha() {
+    fn download_omits_auth_resolves_relative_and_verifies_sha_atomically() {
         let body = b"artifact-bytes".to_vec();
         let sha = hex::encode(Sha256::digest(&body));
         let (base, receiver) = spawn_server(body.clone());
@@ -479,13 +662,18 @@ mod download_tests {
             std::thread::current().id()
         ));
         let destination = directory.join("artifact.tar.gz");
-        let metadata = version("artifact", &sha, body.len() as u64);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(&destination, b"old").unwrap();
+        let metadata = version("artifact", &sha.to_uppercase(), body.len() as u64);
         client.download_artifact(&metadata, &destination).unwrap();
         let request = receiver.recv().unwrap();
         assert!(request.starts_with("GET /gateway/artifact "), "request={request}");
         assert!(!request.to_lowercase().contains("authorization"));
-        assert_eq!(std::fs::read(&destination).unwrap(), body);
-        let _ = std::fs::remove_dir_all(&directory);
+        assert_eq!(fs::read(&destination).unwrap(), body);
+        assert!(fs::read_dir(&directory)
+            .unwrap()
+            .all(|entry| !entry.unwrap().file_name().to_string_lossy().contains(".zed-")));
+        let _ = fs::remove_dir_all(&directory);
     }
 
     #[test]
@@ -498,7 +686,7 @@ mod download_tests {
         let destination = directory.join("artifact.tar.gz");
         let metadata = version(&format!("{base}/artifact"), "deadbeef", 1);
         let error = client.download_artifact(&metadata, &destination).unwrap_err();
-        assert!(matches!(&error, Error::Other(message) if message.contains("exceeded")));
-        let _ = std::fs::remove_dir_all(&directory);
+        assert!(matches!(error, Error::ArtifactTooLarge { .. }));
+        let _ = fs::remove_dir_all(&directory);
     }
 }
