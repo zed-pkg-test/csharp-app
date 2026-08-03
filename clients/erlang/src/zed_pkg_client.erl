@@ -473,9 +473,9 @@ write_file_atomic(DestPath0, Body) ->
                                     _ = file:delete(Temp),
                                     CloseError
                             end;
-                        WriteError ->
+                        WriteFailure ->
                             _ = file:delete(Temp),
-                            WriteError
+                            WriteFailure
                     end;
                 OpenError -> OpenError
             end;
