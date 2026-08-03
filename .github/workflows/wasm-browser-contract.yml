@@ -5,12 +5,14 @@ name: WASM browser transport contract
     paths:
       - '.github/workflows/wasm-browser-contract.yml'
       - 'tests/browser/wasm_transport_contract.mjs'
+      - 'tests/browser/wasm_fixture_csp_shim.mjs'
       - 'clients/wasm/**'
   push:
     branches: [main]
     paths:
       - '.github/workflows/wasm-browser-contract.yml'
       - 'tests/browser/wasm_transport_contract.mjs'
+      - 'tests/browser/wasm_fixture_csp_shim.mjs'
       - 'clients/wasm/**'
   schedule:
     - cron: '37 8 * * 3'
@@ -109,6 +111,7 @@ jobs:
           npm install --no-save --no-package-lock --ignore-scripts playwright@1.61.1
           ./node_modules/.bin/playwright install --with-deps '${{ matrix.engine }}'
           node --check wasm_transport_contract.mjs
+          node --check wasm_fixture_csp_shim.mjs
 
       - name: Exercise hostile transport boundaries in a real browser
         shell: bash
@@ -116,6 +119,7 @@ jobs:
         env:
           ZED_WASM_PKG: ${{ github.workspace }}/zed-clients/clients/wasm/pkg
           BROWSER_ARTIFACT_DIR: ${{ github.workspace }}/zed-clients/artifacts/wasm-transport/${{ matrix.engine }}
+          NODE_OPTIONS: --import=${{ github.workspace }}/zed-clients/tests/browser/wasm_fixture_csp_shim.mjs
         run: node --test --test-reporter=spec wasm_transport_contract.mjs
 
       - name: Verify candidate source remained clean
@@ -123,7 +127,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf zed-clients/clients/wasm/pkg zed-clients/tests/browser/node_modules zed-clients/tests/browser/package.json
+          rm -rf \
+            zed-clients/clients/wasm/pkg \
+            zed-clients/tests/browser/node_modules \
+            zed-clients/tests/browser/package.json \
+            zed-clients/tests/browser/package-lock.json \
+            zed-clients/artifacts
           git -C zed-clients status --short
           test -z "$(git -C zed-clients status --porcelain)"
 
