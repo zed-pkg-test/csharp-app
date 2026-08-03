@@ -1,0 +1,163 @@
+name: apply exact hardening fixes
+
+on:
+  push:
+    branches:
+      - alexanderdmills/den-1403-client-security-hardening
+    paths:
+      - .github/workflows/apply-exact-hardening-fixes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: alexanderdmills/den-1403-client-security-hardening
+          persist-credentials: true
+          show-progress: false
+
+      - name: Apply asserted cross-language corrections
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              source = path.read_text(encoding='utf-8')
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              path.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+          ts = Path('clients/typescript/test/client.test.mjs')
+          source = ts.read_text(encoding='utf-8')
+          old = '  const client = new ZedClient({ registryUrl: "https://x.test///", fetchImpl: fakeFetch });\n'
+          new = '  const client = new ZedClient({ registryUrl: "https://x.test///", token: "token", fetchImpl: fakeFetch });\n'
+          if source.count(old) != 2:
+              raise SystemExit(f'TypeScript authenticated error clients: expected two matches, found {source.count(old)}')
+          ts.write_text(source.replace(old, new), encoding='utf-8')
+
+          replace_once(
+              Path('clients/python/zed_pkg_client/__init__.py'),
+              '''        if (
+              parsed.scheme not in {"http", "https"}
+              or not parsed.hostname
+              or parsed.username is not None
+              or parsed.password is not None
+              or parsed.fragment
+          ):
+              raise ZedApiError(0, "bad_download_url", "download URL is invalid")
+          loopback = _is_loopback_host(parsed.hostname)
+          ''',
+              '''        if parsed.username is not None or parsed.password is not None or parsed.fragment:
+              raise ZedApiError(0, "bad_download_url", "download URL is invalid")
+          if parsed.scheme not in {"http", "https"}:
+              raise ZedApiError(
+                  0,
+                  "insecure_download_url",
+                  f"refusing download over {parsed.scheme!r}",
+              )
+          if not parsed.hostname:
+              raise ZedApiError(0, "bad_download_url", "download URL is invalid")
+          loopback = _is_loopback_host(parsed.hostname)
+          ''',
+              'Python download URL classification',
+          )
+
+          replace_once(
+              Path('clients/go/client.go'),
+              '''\tparsed, err := url.Parse(raw)
+          \tif err != nil || parsed.User != nil || parsed.Fragment != "" || parsed.Hostname() == "" {
+          \t\treturn "", &APIError{Code: "bad_download_url", Message: "download URL is invalid"}
+          \t}
+          \thost := parsed.Hostname()
+          ''',
+              '''\tparsed, err := url.Parse(raw)
+          \tif err != nil || parsed.User != nil || parsed.Fragment != "" {
+          \t\treturn "", &APIError{Code: "bad_download_url", Message: "download URL is invalid"}
+          \t}
+          \tif parsed.Scheme != "http" && parsed.Scheme != "https" {
+          \t\treturn "", &APIError{
+          \t\t\tCode:    "insecure_download_url",
+          \t\t\tMessage: fmt.Sprintf("refusing artifact download over %q", parsed.Scheme),
+          \t\t}
+          \t}
+          \tif parsed.Hostname() == "" {
+          \t\treturn "", &APIError{Code: "bad_download_url", Message: "download URL is invalid"}
+          \t}
+          \thost := parsed.Hostname()
+          ''',
+              'Go download URL classification',
+          )
+
+          replace_once(
+              Path('clients/dart/lib/src/client.dart'),
+              '''String normalizeRegistryUrl(String raw) {
+            final trimmed = raw.trim();
+            final uri = Uri.tryParse(trimmed);
+          ''',
+              '''void _validateRawRegistryPath(String raw) {
+            final schemeEnd = raw.indexOf('://');
+            if (schemeEnd < 0) return;
+            final authorityStart = schemeEnd + 3;
+            final pathStart = raw.indexOf('/', authorityStart);
+            if (pathStart < 0) return;
+            var pathEnd = raw.length;
+            for (final marker in ['?', '#']) {
+              final index = raw.indexOf(marker, pathStart);
+              if (index >= 0 && index < pathEnd) pathEnd = index;
+            }
+            final rawPath = raw.substring(pathStart, pathEnd);
+            final segments = rawPath.split('/');
+            for (var index = 0; index < segments.length; index += 1) {
+              final encoded = segments[index];
+              if (encoded.isEmpty) continue;
+              final String decoded;
+              try {
+                decoded = Uri.decodeComponent(encoded);
+              } on FormatException {
+                throw ArgumentError.value(raw, 'registryUrl', 'contains invalid percent encoding');
+              }
+              _requireText(decoded, 'registry path segment ${index + 1}');
+              if (decoded.contains('/') || decoded.contains('\\\\')) {
+                throw ArgumentError.value(
+                    raw, 'registryUrl', 'path segments must not contain encoded separators');
+              }
+            }
+          }
+
+          String normalizeRegistryUrl(String raw) {
+            final trimmed = raw.trim();
+            _validateRawRegistryPath(trimmed);
+            final uri = Uri.tryParse(trimmed);
+          ''',
+              'Dart raw registry path validation',
+          )
+          replace_once(
+              Path('clients/dart/lib/src/client.dart'),
+              '''    final declared = response.contentLength;
+          ''',
+              '''    final declared =
+                int.tryParse(response.headers['content-length'] ?? '') ??
+                    response.contentLength;
+          ''',
+              'Dart declared response length',
+          )
+          PY
+          git diff --check
+
+      - name: Commit the asserted corrections
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add clients/typescript/test/client.test.mjs \
+            clients/python/zed_pkg_client/__init__.py \
+            clients/go/client.go \
+            clients/dart/lib/src/client.dart
+          git commit -m 'DEN-1403 reconcile exact-head hardening findings'
+          git push origin HEAD:alexanderdmills/den-1403-client-security-hardening
