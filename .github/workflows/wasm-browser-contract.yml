@@ -76,7 +76,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          artifact_dir="$GITHUB_WORKSPACE/zed-clients/artifacts/wasm-transport/${{ matrix.engine }}"
+          artifact_dir="$RUNNER_TEMP/wasm-transport/${{ matrix.engine }}"
           mkdir -p "$artifact_dir"
           {
             printf 'browser=%s\n' '${{ matrix.engine }}'
@@ -118,7 +118,7 @@ jobs:
         working-directory: zed-clients/tests/browser
         env:
           ZED_WASM_PKG: ${{ github.workspace }}/zed-clients/clients/wasm/pkg
-          BROWSER_ARTIFACT_DIR: ${{ github.workspace }}/zed-clients/artifacts/wasm-transport/${{ matrix.engine }}
+          BROWSER_ARTIFACT_DIR: ${{ runner.temp }}/wasm-transport/${{ matrix.engine }}
           NODE_OPTIONS: --import=${{ github.workspace }}/zed-clients/tests/browser/wasm_fixture_csp_shim.mjs
         run: node --test --test-reporter=spec wasm_transport_contract.mjs
 
@@ -131,8 +131,7 @@ jobs:
             zed-clients/clients/wasm/pkg \
             zed-clients/tests/browser/node_modules \
             zed-clients/tests/browser/package.json \
-            zed-clients/tests/browser/package-lock.json \
-            zed-clients/artifacts
+            zed-clients/tests/browser/package-lock.json
           git -C zed-clients status --short
           test -z "$(git -C zed-clients status --porcelain)"
 
@@ -141,6 +140,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wasm-transport-${{ matrix.engine }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: zed-clients/artifacts/wasm-transport/${{ matrix.engine }}/
+          path: ${{ runner.temp }}/wasm-transport/${{ matrix.engine }}/
           if-no-files-found: error
           retention-days: 7
