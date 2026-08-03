@@ -27,44 +27,101 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          def replace_once(path, old, new, label):
-              source = path.read_text(encoding='utf-8')
-              count = source.count(old)
-              if count != 1:
-                  raise SystemExit(f'{label}: expected one match, found {count}')
-              path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          wasm = Path('clients/wasm/src/lib.rs')
+          source = wasm.read_text(encoding='utf-8')
+          old = '''    fn missing_token_and_invalid_constructor_state_fail_before_transport() {
+              let client = ZedClient::new(Some("relative/path".to_string()));
+              assert!(client.ensure_configured().is_err());
+              let client = ZedClient::new(Some("https://registry.test".to_string()));
+              assert!(client.require_token().is_err());
+          }
+          '''
+          new = '''    fn missing_token_and_invalid_constructor_state_fail_before_transport() {
+              let client = ZedClient::new(Some("relative/path".to_string()));
+              assert!(client.configuration_error.is_some());
+              let mut client = ZedClient::new(Some("https://registry.test".to_string()));
+              assert!(client.token.is_none());
+              client.with_token("   ".to_string());
+              assert!(client.token.is_none());
+          }
+          '''
+          if source.count(old) != 1:
+              raise SystemExit(f'WASM native-only state test: expected one match, found {source.count(old)}')
+          wasm.write_text(source.replace(old, new, 1), encoding='utf-8')
 
-          replace_once(
-              Path('clients/wasm/src/lib.rs'),
-              '''    fn missing_token_and_invalid_constructor_state_fail_before_transport() {
-                  let client = ZedClient::new(Some("relative/path".to_string()));
-                  assert!(client.ensure_configured().is_err());
-                  let client = ZedClient::new(Some("https://registry.test".to_string()));
-                  assert!(client.require_token().is_err());
-              }
-          ''',
-              '''    fn missing_token_and_invalid_constructor_state_fail_before_transport() {
-                  let client = ZedClient::new(Some("relative/path".to_string()));
-                  assert!(client.configuration_error.is_some());
-                  let mut client = ZedClient::new(Some("https://registry.test".to_string()));
-                  assert!(client.token.is_none());
-                  client.with_token("   ".to_string());
-                  assert!(client.token.is_none());
-              }
-          ''',
-              'WASM native-only state test',
+          swift = Path('clients/swift/Tests/ZedClientTests/ZedClientTests.swift')
+          source = swift.read_text(encoding='utf-8')
+          pattern = re.compile(
+              r'    func testRejectsHostileSegmentsBeforeTransport\(\) async throws \{.*?\n    func testAuthenticatedOperationsRequireTokenBeforeTransport\(\) async throws \{',
+              re.DOTALL,
           )
+          replacement = '''    func testRejectsHostileSegmentsBeforeTransport() async throws {
+              let client = try makeClient()
+              for value in ["", "   ", ".", "..", "line\\nbreak"] {
+                  do {
+                      _ = try await client.getPackage(org: value, name: "kit")
+                      XCTFail("expected segment rejection for \\(value.debugDescription)")
+                  } catch let error as ZedClientError {
+                      guard case .invalidConfiguration = error else {
+                          return XCTFail("unexpected error: \\(error)")
+                      }
+                  }
+              }
+          }
 
-          replace_once(
-              Path('clients/swift/Tests/ZedClientTests/ZedClientTests.swift'),
-              '''        XCTAssertEqual(try await client.downloadArtifact(version), artifact)
-          ''',
-              '''        let downloaded = try await client.downloadArtifact(version)
-                  XCTAssertEqual(downloaded, artifact)
-          ''',
-              'Swift async XCTest assertion',
-          )
+          func testRelativeDownloadURLPreservesGatewayAndUppercaseDigest() async throws {
+              let artifact = Data("abc".utf8)
+              let recorder = RequestRecorder()
+              StubURLProtocol.handler = { request in
+                  recorder.append(request)
+                  return StubResponse(status: 200, body: artifact)
+              }
+              let client = try makeClient(basePath: "/gateway")
+              let version = VersionMetadata(
+                  org: "acme",
+                  name: "kit",
+                  version: "1.0.0",
+                  sha256: "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD",
+                  size: Int64(artifact.count),
+                  format: "tar.gz",
+                  vcsTag: "v1.0.0",
+                  vcsCommit: nil,
+                  downloadURL: "artifacts/hash",
+                  publishedAt: "now",
+                  yanked: false
+              )
+              let downloaded = try await client.downloadArtifact(version)
+              XCTAssertEqual(downloaded, artifact)
+              XCTAssertEqual(recorder.snapshot().first?.url?.path, "/gateway/artifacts/hash")
+          }
+
+          func testBlankStructuredErrorCodeFallsBackToHTTPStatus() async throws {
+              StubURLProtocol.handler = { _ in
+                  StubResponse(
+                      status: 409,
+                      body: Data(#"{"code":"   ","message":"remote detail"}"#.utf8)
+                  )
+              }
+              let client = try makeClient(token: "token")
+              do {
+                  _ = try await client.claimOrg(slug: "acme")
+                  XCTFail("expected API error")
+              } catch let error as ZedClientError {
+                  guard case let .api(status, code, _) = error else {
+                      return XCTFail("unexpected error: \\(error)")
+                  }
+                  XCTAssertEqual(status, 409)
+                  XCTAssertEqual(code, "http_409")
+              }
+          }
+
+          func testAuthenticatedOperationsRequireTokenBeforeTransport() async throws {'''
+          updated, count = pattern.subn(replacement, source, count=1)
+          if count != 1:
+              raise SystemExit(f'Swift inserted hardening test block: expected one match, found {count}')
+          swift.write_text(updated, encoding='utf-8')
           PY
           git diff --check
 
