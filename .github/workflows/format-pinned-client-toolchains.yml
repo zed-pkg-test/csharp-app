@@ -1,3 +1,4 @@
+# Re-run against the pinned client harness after Gleam dependency hydration.
 name: format SDKs with pinned client toolchains
 
 on:
@@ -59,9 +60,6 @@ jobs:
             mkdir -p "$(dirname "$path")"
             git show "$source_ref:$path" > "$path"
           done
-          # Nix's git flake loader intentionally ignores untracked files. Mark
-          # these temporary reviewed toolchain files as intent-to-add so the
-          # exact pinned flake is visible without making them product changes.
           git add -N flake.nix flake.lock .nix/agent-check.sh .nix/dev-shell.nix
 
       - name: Install pinned Nix
@@ -85,6 +83,7 @@ jobs:
             )
             (
               cd clients/gleam
+              gleam deps download
               gleam format
             )
           '
