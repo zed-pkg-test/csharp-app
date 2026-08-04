@@ -65,9 +65,12 @@ jobs:
               text = text.replace(before, after, 1)
           path.write_text(text)
           PY
-          npm ci
-          npm run build
-          npm test
+          (
+            cd clients/typescript
+            npm install
+            npm run build
+            npm test
+          )
           git rm .github/workflows/agent-typescript-nix-plan-fix.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -75,4 +78,3 @@ jobs:
           git diff --cached --check
           git commit -m "fix(DEN-1418): align TypeScript Nix plan validation"
           git push origin HEAD:agent/den-1418-typescript-nix-plan
-        working-directory: .
