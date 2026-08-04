@@ -81,10 +81,7 @@ jobs:
             (
               cd clients/dart
               dart pub get
-              dart format \
-                lib/src/verified_client.dart \
-                test/verified_client_test.dart \
-                test/yank_test.dart
+              dart format lib test
             )
             (
               cd clients/gleam
@@ -120,9 +117,10 @@ jobs:
             clients/go/nix_adapter.go \
             clients/go/nix_adapter_test.go \
             clients/rust/src/lib.rs \
-            clients/dart/lib/src/verified_client.dart \
-            clients/dart/test/verified_client_test.dart \
-            clients/dart/test/yank_test.dart \
+            clients/dart/lib/src/client.dart \
+            clients/dart/lib/src/models.dart \
+            clients/dart/test/hardening_test.dart \
+            clients/dart/test/zed_pkg_client_test.dart \
             clients/gleam/src/zed_pkg_client.gleam \
             clients/gleam/test/publish_hardening_test.gleam \
             clients/gleam/test/zed_pkg_client_test.gleam \
