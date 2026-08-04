@@ -353,7 +353,12 @@ function parsePolicy(value: unknown): NixPolicyEvidence {
 /** Parse and normalize one strict `zed.nix-export-plan/v1` JSON value. */
 export function parseNixExportPlan(value: unknown): NixExportPlan {
   const parsed = record(value, "plan");
-  exactKeys(parsed, ROOT_KEYS, [], "plan");
+  exactKeys(
+    parsed,
+    ["schema", "package", "package_class", "intent", "source", "policy"],
+    ["bins", "dependencies"],
+    "plan",
+  );
   const schema = oneOf(parsed.schema, [NIX_EXPORT_PLAN_SCHEMA_V1], "schema");
   const pkg = parsePackage(parsed.package);
   const packageClass = oneOf(
@@ -361,7 +366,7 @@ export function parseNixExportPlan(value: unknown): NixExportPlan {
     ["data", "prebuilt-bin"],
     "package_class",
   );
-  const bins = parseBins(parsed.bins);
+  const bins = parseBins(parsed.bins ?? {});
   if (packageClass === "data" && Object.keys(bins).length !== 0) {
     throw new NixExportPlanError("data packages must have an empty bins object");
   }
@@ -375,7 +380,7 @@ export function parseNixExportPlan(value: unknown): NixExportPlan {
     intent: parseIntent(parsed.intent),
     source: parseSource(parsed.source, pkg),
     bins,
-    dependencies: parseDependencies(parsed.dependencies),
+    dependencies: parseDependencies(parsed.dependencies ?? []),
     policy: parsePolicy(parsed.policy),
   };
 }
