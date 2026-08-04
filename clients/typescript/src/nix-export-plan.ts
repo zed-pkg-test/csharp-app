@@ -74,7 +74,7 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/;
 const TARGET_RE = /^[a-z0-9](?:[a-z0-9._+-]{0,126}[a-z0-9])?$/;
 const NIX_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_'-]*$/;
-const NIX_SYSTEM_RE = /^[a-z0-9_]+-[a-z0-9_]+$/;
+const NIX_SYSTEM_RE = /^[a-z0-9_]+(?:-[a-z0-9_]+)+$/;
 const BIN_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/;
 
 const ROOT_KEYS = [
@@ -217,6 +217,13 @@ function nixIdentifier(value: string, label: string): string {
   return value;
 }
 
+function nixAttributePath(value: string, label: string): string {
+  if (value.length === 0 || !value.split(".").every((part) => NIX_IDENTIFIER_RE.test(part))) {
+    throw new NixExportPlanError(`${label} must be a dot-separated Nix attribute path`);
+  }
+  return value;
+}
+
 function artifactRelativePath(value: unknown, label: string): string {
   const parsed = string(value, label);
   if (
@@ -250,7 +257,7 @@ function parseIntent(value: unknown): ResolvedNixExportIntent {
   exactKeys(parsed, ["mode", "attribute", "systems", "outputs"], [], "intent");
   return {
     mode: oneOf(parsed.mode, ["artifact"], "intent.mode"),
-    attribute: nixIdentifier(string(parsed.attribute, "intent.attribute"), "intent.attribute"),
+    attribute: nixAttributePath(string(parsed.attribute, "intent.attribute"), "intent.attribute"),
     systems: sortedUniqueStrings(parsed.systems, "intent.systems", nixSystem),
     outputs: sortedUniqueStrings(parsed.outputs, "intent.outputs", nixIdentifier),
   };
