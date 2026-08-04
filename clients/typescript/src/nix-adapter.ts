@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import type { NixPackageIdentity } from "./nix-export-plan.js";
 
 export const NIX_ADAPTER_SCHEMA_V1 = "zed.nix-adapter/v1" as const;
@@ -53,8 +51,8 @@ export interface NixRealizedOutput {
   store_path: string;
   nar_hash: string;
   nar_size: number;
-  references: NixStoreReference[];
-  signatures: string[];
+  references?: NixStoreReference[];
+  signatures?: string[];
   nix_version: string;
   store_info_json_version: 1 | 2 | 3;
 }
@@ -114,7 +112,6 @@ const SHA256_SRI_RE = /^sha256-[A-Za-z0-9+/]{43}=$/;
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/;
 const TARGET_RE = /^[a-z0-9](?:[a-z0-9._+-]{0,126}[a-z0-9])?$/;
 const NIX_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_'-]*$/;
-const NIX_SYSTEM_RE = /^[a-z0-9_]+(?:-[a-z0-9_]+)+$/;
 const NIX_STORE_RE = /^\/nix\/store\/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?-]+$/;
 const HEX_REVISION_RE = /^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$/;
 
@@ -252,7 +249,13 @@ function nixAttributePath(value: unknown, label: string): string {
 
 function nixSystem(value: unknown, label: string): string {
   const parsed = text(value, label);
-  if (!NIX_SYSTEM_RE.test(parsed)) {
+  if (
+    parsed.length === 0 ||
+    !parsed.includes("-") ||
+    parsed.startsWith("-") ||
+    parsed.endsWith("-") ||
+    !/^[a-z0-9_-]+$/u.test(parsed)
+  ) {
     throw new NixAdapterRecordError(`${label} must be a lowercase Nix system`);
   }
   return parsed;
@@ -490,11 +493,13 @@ function parseRealizedOutput(value: unknown, label: string): NixRealizedOutput {
     ["references", "signatures"],
     label,
   );
-  const references = (parsed.references === undefined
+  const references = parsed.references === undefined
     ? []
     : Array.isArray(parsed.references)
       ? parsed.references.map((item, index) => parseStoreReference(item, `${label}.references[${index}]`))
-      : (() => { throw new NixAdapterRecordError(`${label}.references must be an array`); })());
+      : (() => {
+          throw new NixAdapterRecordError(`${label}.references must be an array`);
+        })();
   unique(references, (item) => item.store_path, `${label}.references`);
 
   const signatures = parsed.signatures === undefined
@@ -508,7 +513,7 @@ function parseRealizedOutput(value: unknown, label: string): NixRealizedOutput {
     throw new NixAdapterRecordError(`${label}.nix_version must be recorded`);
   }
 
-  return {
+  const result: NixRealizedOutput = {
     system: nixSystem(parsed.system, `${label}.system`),
     output: nixIdentifier(parsed.output, `${label}.output`),
     derivation_json_sha256: hexSha256(
@@ -518,14 +523,20 @@ function parseRealizedOutput(value: unknown, label: string): NixRealizedOutput {
     store_path: nixStorePath(parsed.store_path, `${label}.store_path`),
     nar_hash: sriSha256(parsed.nar_hash, `${label}.nar_hash`),
     nar_size: positiveSafeInteger(parsed.nar_size, `${label}.nar_size`),
-    references: [...references].sort((left, right) => left.store_path.localeCompare(right.store_path)),
-    signatures: [...signatures].sort(),
     nix_version: nixVersion,
     store_info_json_version: supportedStoreInfoVersion(
       parsed.store_info_json_version,
       `${label}.store_info_json_version`,
     ),
   };
+  if (references.length !== 0) {
+    result.references = [...references]
+      .sort((left, right) => left.store_path.localeCompare(right.store_path));
+  }
+  if (signatures.length !== 0) {
+    result.signatures = [...signatures].sort();
+  }
+  return result;
 }
 
 function parseNixOrigin(value: unknown): NixOutputOrigin {
@@ -565,7 +576,8 @@ function parseZedToNix(parsed: JsonRecord): ZedToNixAdapterRecord {
   if (!Array.isArray(parsed.outputs) || parsed.outputs.length === 0) {
     throw new NixAdapterRecordError("outputs must contain realized evidence");
   }
-  const outputs = parsed.outputs.map((item, index) => parseRealizedOutput(item, `outputs[${index}]`));
+  const outputs = parsed.outputs
+    .map((item, index) => parseRealizedOutput(item, `outputs[${index}]`));
   unique(outputs, (item) => `${item.system}\u0000${item.output}`, "outputs");
   const declaredSystems = new Set(intent.systems);
   const declaredOutputs = new Set(intent.outputs);
@@ -605,7 +617,7 @@ function parseNixToZed(parsed: JsonRecord): NixToZedAdapterRecord {
     "record",
   );
   const source = parseNixOrigin(parsed.source);
-  if (source.realized.references.length !== 0) {
+  if ((source.realized.references?.length ?? 0) !== 0) {
     throw new NixAdapterRecordError(
       "contract v1 Nix-to-Zed imports must be closure-free",
     );
@@ -664,11 +676,27 @@ export function canonicalNixAdapterRecordJson(value: unknown): string {
   return JSON.stringify(canonicalizeJson(parseNixAdapterRecord(value)));
 }
 
+function subtleCrypto(): SubtleCrypto {
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle === undefined) {
+    throw new NixAdapterRecordError("Web Crypto SHA-256 is unavailable");
+  }
+  return subtle;
+}
+
+async function sha256Hex(value: string | Uint8Array): Promise<string> {
+  const bytes = typeof value === "string"
+    ? new TextEncoder().encode(value)
+    : Uint8Array.from(value);
+  const digest = await subtleCrypto().digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 /** SHA-256 hex of the canonical adapter bytes. */
-export function nixAdapterRecordSha256(value: unknown): string {
-  return createHash("sha256")
-    .update(canonicalNixAdapterRecordJson(value), "utf8")
-    .digest("hex");
+export async function nixAdapterRecordSha256(value: unknown): Promise<string> {
+  return sha256Hex(canonicalNixAdapterRecordJson(value));
 }
 
 /**
@@ -676,16 +704,16 @@ export function nixAdapterRecordSha256(value: unknown): string {
  * to an expected digest. This is structural/offline verification only; it does
  * not replay Nix realization or prove that a store path currently exists.
  */
-export function verifyCanonicalNixAdapterRecordJson(
+export async function verifyCanonicalNixAdapterRecordJson(
   json: string,
   expectedSha256?: string,
-): VerifiedCanonicalNixAdapterRecord {
+): Promise<VerifiedCanonicalNixAdapterRecord> {
   const record = parseNixAdapterRecordJson(json);
   const canonicalJson = canonicalNixAdapterRecordJson(record);
   if (json !== canonicalJson) {
     throw new NixAdapterRecordError("input bytes are not canonical compact JSON");
   }
-  const digest = createHash("sha256").update(canonicalJson, "utf8").digest("hex");
+  const digest = await sha256Hex(canonicalJson);
   if (expectedSha256 !== undefined) {
     const expected = hexSha256(expectedSha256, "expected adapter SHA-256");
     if (digest !== expected) {
@@ -700,15 +728,15 @@ export function verifyCanonicalNixAdapterRecordJson(
  * Nix-to-Zed records verify the translated artifact; Zed-to-Nix records verify
  * the source Zed artifact. Nix realization claims still require CLI/store replay.
  */
-export function verifyNixAdapterArtifactBytes(
+export async function verifyNixAdapterArtifactBytes(
   value: unknown,
   bytes: Uint8Array,
-): VerifiedNixAdapterArtifact {
+): Promise<VerifiedNixAdapterArtifact> {
   const record = parseNixAdapterRecord(value);
   const artifact = record.direction === "nix-to-zed"
     ? record.artifact
     : record.source.artifact;
-  const digest = createHash("sha256").update(bytes).digest("hex");
+  const digest = await sha256Hex(bytes);
   if (digest !== artifact.sha256) {
     throw new NixAdapterRecordError("Zed artifact SHA-256 mismatch");
   }
