@@ -29,11 +29,11 @@ class PackageSummary {
   });
 
   factory PackageSummary.fromJson(Map<String, dynamic> json) => PackageSummary(
-        org: json['org'] as String,
-        name: json['name'] as String,
-        description: json['description'] as String?,
-        latest: json['latest'] as String?,
-      );
+    org: json['org'] as String,
+    name: json['name'] as String,
+    description: json['description'] as String?,
+    latest: json['latest'] as String?,
+  );
 
   final String org;
   final String name;
@@ -124,11 +124,11 @@ class SearchResponse {
   SearchResponse({required this.query, required this.items});
 
   factory SearchResponse.fromJson(Map<String, dynamic> json) => SearchResponse(
-        query: json['query'] as String? ?? '',
-        items: (json['items'] as List<dynamic>? ?? const [])
-            .map((item) => PackageSummary.fromJson(item as Map<String, dynamic>))
-            .toList(),
-      );
+    query: json['query'] as String? ?? '',
+    items: (json['items'] as List<dynamic>? ?? const [])
+        .map((item) => PackageSummary.fromJson(item as Map<String, dynamic>))
+        .toList(),
+  );
 
   final String query;
   final List<PackageSummary> items;
@@ -156,11 +156,11 @@ class YankResponse {
   });
 
   factory YankResponse.fromJson(Map<String, dynamic> json) => YankResponse(
-        org: json['org'] as String,
-        name: json['name'] as String,
-        version: json['version'] as String,
-        yanked: json['yanked'] as bool,
-      );
+    org: json['org'] as String,
+    name: json['name'] as String,
+    version: json['version'] as String,
+    yanked: json['yanked'] as bool,
+  );
 
   final String org;
   final String name;

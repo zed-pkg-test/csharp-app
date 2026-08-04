@@ -46,10 +46,17 @@ String _requireText(String value, String name) {
   }
   if (utf8.encode(value).length > maxPathSegmentBytes) {
     throw ArgumentError.value(
-        value, name, 'exceeds $maxPathSegmentBytes UTF-8 bytes');
+      value,
+      name,
+      'exceeds $maxPathSegmentBytes UTF-8 bytes',
+    );
   }
   if (value.runes.any((rune) => rune < 0x20 || rune == 0x7f)) {
-    throw ArgumentError.value(value, name, 'must not contain control characters');
+    throw ArgumentError.value(
+      value,
+      name,
+      'must not contain control characters',
+    );
   }
   return value;
 }
@@ -90,12 +97,18 @@ void _validateRawRegistryPath(String raw) {
       decoded = Uri.decodeComponent(encoded);
     } on FormatException {
       throw ArgumentError.value(
-          raw, 'registryUrl', 'contains invalid percent encoding');
+        raw,
+        'registryUrl',
+        'contains invalid percent encoding',
+      );
     }
     _requireText(decoded, 'registry path segment ${index + 1}');
     if (decoded.contains('/') || decoded.contains('\\')) {
       throw ArgumentError.value(
-          raw, 'registryUrl', 'path segments must not contain encoded separators');
+        raw,
+        'registryUrl',
+        'path segments must not contain encoded separators',
+      );
     }
   }
 }
@@ -123,7 +136,10 @@ String normalizeRegistryUrl(String raw) {
     _requireText(segment, 'registry path segment ${index + 1}');
     if (segment.contains('/') || segment.contains('\\')) {
       throw ArgumentError.value(
-          raw, 'registryUrl', 'path segments must not contain encoded separators');
+        raw,
+        'registryUrl',
+        'path segments must not contain encoded separators',
+      );
     }
   }
   return trimmed.replaceAll(RegExp(r'/+$'), '');
@@ -198,9 +214,9 @@ final class ZedClient {
     required http.Client httpClient,
     required bool ownsHttpClient,
     required Duration timeout,
-  })  : _http = httpClient,
-        _ownsHttpClient = ownsHttpClient,
-        _timeout = timeout;
+  }) : _http = httpClient,
+       _ownsHttpClient = ownsHttpClient,
+       _timeout = timeout;
 
   final String base;
   final String? token;
@@ -248,8 +264,9 @@ final class ZedClient {
         if (candidate is String && candidate.trim().isNotEmpty) {
           code = candidate.trim();
         }
-        message =
-            parsed['message'] is String ? parsed['message'] as String : text;
+        message = parsed['message'] is String
+            ? parsed['message'] as String
+            : text;
       }
     } on FormatException {
       // Non-JSON error body remains available only through the explicit field.
@@ -266,10 +283,13 @@ final class ZedClient {
   }) async {
     final declared =
         int.tryParse(response.headers['content-length'] ?? '') ??
-            response.contentLength;
+        response.contentLength;
     if (declared != null && declared > limit && failOnOverflow) {
       throw ZedApiError(
-          0, overflowCode, '$description exceeded $limit bytes; refusing');
+        0,
+        overflowCode,
+        '$description exceeded $limit bytes; refusing',
+      );
     }
     final builder = BytesBuilder(copy: false);
     await for (final chunk in response.stream.timeout(_timeout)) {
@@ -280,7 +300,10 @@ final class ZedClient {
         }
         if (failOnOverflow) {
           throw ZedApiError(
-              0, overflowCode, '$description exceeded $limit bytes; refusing');
+            0,
+            overflowCode,
+            '$description exceeded $limit bytes; refusing',
+          );
         }
         break;
       }
@@ -316,8 +339,7 @@ final class ZedClient {
         overflowCode: successOverflowCode,
         description: successDescription,
       );
-    })()
-        .timeout(_timeout);
+    })().timeout(_timeout);
   }
 
   Future<Map<String, dynamic>> _requestJson(
@@ -327,10 +349,12 @@ final class ZedClient {
     bool authorized = false,
   }) async {
     final request = http.Request(method, Uri.parse('$base$path'));
-    request.headers.addAll(_headers(
-      authorized: authorized,
-      contentType: body != null ? 'application/json' : null,
-    ));
+    request.headers.addAll(
+      _headers(
+        authorized: authorized,
+        contentType: body != null ? 'application/json' : null,
+      ),
+    );
     if (body != null) {
       request.body = jsonEncode(body);
     }
@@ -354,40 +378,59 @@ final class ZedClient {
 
   /// `GET /v1/packages/{org}/{name}` — package metadata + version list.
   Future<PackageMetadata> getPackage(String org, String name) async =>
-      PackageMetadata.fromJson(await _requestJson('GET', packagePath(org, name)));
+      PackageMetadata.fromJson(
+        await _requestJson('GET', packagePath(org, name)),
+      );
 
   /// `GET /v1/packages/{org}/{name}/versions/{version}`.
   Future<VersionMetadata> getVersion(
-          String org, String name, String version) async =>
-      VersionMetadata.fromJson(
-          await _requestJson('GET', versionPath(org, name, version)));
+    String org,
+    String name,
+    String version,
+  ) async => VersionMetadata.fromJson(
+    await _requestJson('GET', versionPath(org, name, version)),
+  );
 
   /// `GET /v1/search?q=`.
   Future<SearchResponse> search(String query) async => SearchResponse.fromJson(
-      await _requestJson('GET', '/v1/search?q=${Uri.encodeQueryComponent(query)}'));
+    await _requestJson(
+      'GET',
+      '/v1/search?q=${Uri.encodeQueryComponent(query)}',
+    ),
+  );
 
   /// `POST /v1/orgs` (bearer token).
   Future<ClaimOrgResponse> claimOrg(String slug) async =>
-      ClaimOrgResponse.fromJson(await _requestJson(
-        'POST',
-        '/v1/orgs',
-        body: {'slug': _requireText(slug, 'slug')},
-        authorized: true,
-      ));
+      ClaimOrgResponse.fromJson(
+        await _requestJson(
+          'POST',
+          '/v1/orgs',
+          body: {'slug': _requireText(slug, 'slug')},
+          authorized: true,
+        ),
+      );
 
   Future<YankResponse> setYanked(
-          String org, String name, String version, bool yanked) async =>
-      YankResponse.fromJson(await _requestJson(
-        'POST',
-        yankPath(org, name, version),
-        body: {'yanked': yanked},
-        authorized: true,
-      ));
+    String org,
+    String name,
+    String version,
+    bool yanked,
+  ) async => YankResponse.fromJson(
+    await _requestJson(
+      'POST',
+      yankPath(org, name, version),
+      body: {'yanked': yanked},
+      authorized: true,
+    ),
+  );
 
   /// Yank a version. The optional argument is retained for compatibility.
-  Future<YankResponse> yank(String org, String name, String version,
-          [bool yanked = true]) async =>
-      setYanked(org, name, version, yanked);
+  Future<YankResponse> yank(
+    String org,
+    String name,
+    String version, [
+    bool yanked = true,
+  ]) async => setYanked(org, name, version, yanked);
 
   /// Restore a previously yanked version.
   Future<YankResponse> restore(String org, String name, String version) async =>
@@ -404,7 +447,10 @@ final class ZedClient {
       if (parsed != null && parsed.hasScheme) {
         url = allowedDownloadUrl(raw, base);
       } else {
-        url = allowedDownloadUrl(Uri.parse('$base/').resolve(raw).toString(), base);
+        url = allowedDownloadUrl(
+          Uri.parse('$base/').resolve(raw).toString(),
+          base,
+        );
       }
     }
     // Deliberately no auth header: download_url may point at a third-party
@@ -422,36 +468,59 @@ final class ZedClient {
 
   /// Publish: multipart `meta` (PublishMeta JSON) + `artifact` bytes.
   Future<PublishResponse> publish(
-      Map<String, dynamic> meta, List<int> artifact) async {
+    Map<String, dynamic> meta,
+    List<int> artifact,
+  ) async {
     _requireToken();
     if (artifact.length > maxArtifactBytes) {
-      throw ZedApiError(0, 'artifact_too_large',
-          'artifact exceeded $maxArtifactBytes bytes; refusing');
+      throw ZedApiError(
+        0,
+        'artifact_too_large',
+        'artifact exceeded $maxArtifactBytes bytes; refusing',
+      );
     }
     final manifest = meta['manifest'];
-    final package = manifest is Map<String, dynamic> ? manifest['package'] : null;
+    final package = manifest is Map<String, dynamic>
+        ? manifest['package']
+        : null;
     if (package is! Map<String, dynamic> ||
         package['org'] is! String ||
         package['name'] is! String ||
         package['version'] is! String) {
       throw ZedApiError(
-          0, 'invalid_publish_meta', 'meta.manifest.package is required');
+        0,
+        'invalid_publish_meta',
+        'meta.manifest.package is required',
+      );
     }
-    final org = _requireText(package['org'] as String, 'meta.manifest.package.org');
-    final name = _requireText(package['name'] as String, 'meta.manifest.package.name');
-    final version =
-        _requireText(package['version'] as String, 'meta.manifest.package.version');
+    final org = _requireText(
+      package['org'] as String,
+      'meta.manifest.package.org',
+    );
+    final name = _requireText(
+      package['name'] as String,
+      'meta.manifest.package.name',
+    );
+    final version = _requireText(
+      package['version'] as String,
+      'meta.manifest.package.version',
+    );
     final request =
-        http.MultipartRequest('PUT', Uri.parse('$base${versionPath(org, name, version)}'))
+        http.MultipartRequest(
+            'PUT',
+            Uri.parse('$base${versionPath(org, name, version)}'),
+          )
           ..followRedirects = false
           ..maxRedirects = 0
           ..headers.addAll(_headers(authorized: true))
           ..fields['meta'] = jsonEncode(meta)
-          ..files.add(http.MultipartFile.fromBytes(
-            'artifact',
-            artifact,
-            filename: '$org-$name-$version.tar.gz',
-          ));
+          ..files.add(
+            http.MultipartFile.fromBytes(
+              'artifact',
+              artifact,
+              filename: '$org-$name-$version.tar.gz',
+            ),
+          );
     final bytes = await _sendBounded(
       request,
       successLimit: maxJsonResponseBytes,

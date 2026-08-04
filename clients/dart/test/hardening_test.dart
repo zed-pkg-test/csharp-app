@@ -41,15 +41,12 @@ class _SlowBodyClient extends http.BaseClient {
 }
 
 Map<String, dynamic> _meta({String org = 'acme'}) => {
-      'manifest': {
-        'package': {'org': org, 'name': 'kit', 'version': '1.2.0'}
-      }
-    };
+  'manifest': {
+    'package': {'org': org, 'name': 'kit', 'version': '1.2.0'},
+  },
+};
 
-VersionMetadata _version(
-  List<int> body, {
-  String downloadUrl = '',
-}) =>
+VersionMetadata _version(List<int> body, {String downloadUrl = ''}) =>
     VersionMetadata(
       org: 'acme',
       name: 'kit',
@@ -74,86 +71,114 @@ void main() {
       'https://registry.test/%2e%2e/admin',
       'https://registry.test/a%2Fb',
     ]) {
-      expect(() => ZedClient(registryUrl: base), throwsArgumentError,
-          reason: base);
+      expect(
+        () => ZedClient(registryUrl: base),
+        throwsArgumentError,
+        reason: base,
+      );
     }
     for (final value in ['', '   ', '.', '..', 'line\nbreak', 'nul\x00byte']) {
-      expect(() => client.packagePath(value, 'kit'), throwsArgumentError,
-          reason: value);
+      expect(
+        () => client.packagePath(value, 'kit'),
+        throwsArgumentError,
+        reason: value,
+      );
     }
     expect(
       () => client.versionPath(
-          'acme', 'kit', 'x' * (client.maxPathSegmentBytes + 1)),
+        'acme',
+        'kit',
+        'x' * (client.maxPathSegmentBytes + 1),
+      ),
       throwsArgumentError,
     );
   });
 
-  test('authenticated operations fail before transport without a token', () async {
-    var calls = 0;
-    final mock = MockClient((request) async {
-      calls += 1;
-      throw StateError('transport must not run');
-    });
-    final zed = ZedClient(httpClient: mock);
-    final operations = <Future<Object?> Function()>[
-      () => zed.claimOrg('acme'),
-      () => zed.yank('acme', 'kit', '1.2.0'),
-      () => zed.restore('acme', 'kit', '1.2.0'),
-      () => zed.publish(_meta(), utf8.encode('artifact')),
-    ];
-    for (final operation in operations) {
-      await expectLater(
-        operation,
-        throwsA(isA<ZedApiError>()
-            .having((error) => error.code, 'code', 'missing_token')),
-      );
-    }
-    expect(calls, 0);
-  });
-
-  test('redirect refusal is explicit on registry and artifact requests', () async {
-    final seen = <http.Request>[];
-    final body = utf8.encode('artifact');
-    final mock = MockClient((request) async {
-      seen.add(request);
-      if (request.url.path.contains('/artifacts/')) {
-        return http.Response.bytes(body, 200);
+  test(
+    'authenticated operations fail before transport without a token',
+    () async {
+      var calls = 0;
+      final mock = MockClient((request) async {
+        calls += 1;
+        throw StateError('transport must not run');
+      });
+      final zed = ZedClient(httpClient: mock);
+      final operations = <Future<Object?> Function()>[
+        () => zed.claimOrg('acme'),
+        () => zed.yank('acme', 'kit', '1.2.0'),
+        () => zed.restore('acme', 'kit', '1.2.0'),
+        () => zed.publish(_meta(), utf8.encode('artifact')),
+      ];
+      for (final operation in operations) {
+        await expectLater(
+          operation,
+          throwsA(
+            isA<ZedApiError>().having(
+              (error) => error.code,
+              'code',
+              'missing_token',
+            ),
+          ),
+        );
       }
-      return http.Response(jsonEncode({'query': 'x', 'items': []}), 200);
-    });
-    final zed = ZedClient(httpClient: mock);
-    await zed.search('x');
-    await zed.downloadArtifact(_version(body));
-    expect(seen, hasLength(2));
-    for (final request in seen) {
-      expect(request.followRedirects, isFalse);
-      expect(request.maxRedirects, 0);
-    }
-  });
+      expect(calls, 0);
+    },
+  );
+
+  test(
+    'redirect refusal is explicit on registry and artifact requests',
+    () async {
+      final seen = <http.Request>[];
+      final body = utf8.encode('artifact');
+      final mock = MockClient((request) async {
+        seen.add(request);
+        if (request.url.path.contains('/artifacts/')) {
+          return http.Response.bytes(body, 200);
+        }
+        return http.Response(jsonEncode({'query': 'x', 'items': []}), 200);
+      });
+      final zed = ZedClient(httpClient: mock);
+      await zed.search('x');
+      await zed.downloadArtifact(_version(body));
+      expect(seen, hasLength(2));
+      for (final request in seen) {
+        expect(request.followRedirects, isFalse);
+        expect(request.maxRedirects, 0);
+      }
+    },
+  );
 
   test('success and error bodies use independent bounds', () async {
-    final oversizedSuccess = MockClient((request) async => http.Response(
-          '{}',
-          200,
-          headers: {
-            'content-length': '${client.maxJsonResponseBytes + 1}',
-          },
-        ));
+    final oversizedSuccess = MockClient(
+      (request) async => http.Response(
+        '{}',
+        200,
+        headers: {'content-length': '${client.maxJsonResponseBytes + 1}'},
+      ),
+    );
     await expectLater(
       ZedClient(httpClient: oversizedSuccess).search('x'),
-      throwsA(isA<ZedApiError>()
-          .having((error) => error.code, 'code', 'response_too_large')),
+      throwsA(
+        isA<ZedApiError>().having(
+          (error) => error.code,
+          'code',
+          'response_too_large',
+        ),
+      ),
     );
 
     final remote = 'provider-secret' * client.maxErrorBodyBytes;
-    final oversizedError =
-        MockClient((request) async => http.Response(remote, 502));
+    final oversizedError = MockClient(
+      (request) async => http.Response(remote, 502),
+    );
     try {
       await ZedClient(httpClient: oversizedError).search('x');
       fail('expected ZedApiError');
     } on ZedApiError catch (error) {
-      expect(utf8.encode(error.registryMessage).length,
-          lessThanOrEqualTo(client.maxErrorBodyBytes));
+      expect(
+        utf8.encode(error.registryMessage).length,
+        lessThanOrEqualTo(client.maxErrorBodyBytes),
+      );
       expect(error.toString(), 'registry error 502: http_502');
       expect(error.toString(), isNot(contains('provider-secret')));
     }
@@ -177,26 +202,34 @@ void main() {
     expect(seen.toString(), 'https://registry.test/gateway/artifacts/hash');
   });
 
-  test('credentialed and fragmented artifact urls fail before transport', () async {
-    var calls = 0;
-    final zed = ZedClient(
-      httpClient: MockClient((request) async {
-        calls += 1;
-        return http.Response('', 200);
-      }),
-    );
-    for (final raw in [
-      'https://user:secret@cdn.test/artifact',
-      'https://cdn.test/artifact#fragment',
-    ]) {
-      await expectLater(
-        zed.downloadArtifact(_version([1], downloadUrl: raw)),
-        throwsA(isA<ZedApiError>()
-            .having((error) => error.code, 'code', 'bad_download_url')),
+  test(
+    'credentialed and fragmented artifact urls fail before transport',
+    () async {
+      var calls = 0;
+      final zed = ZedClient(
+        httpClient: MockClient((request) async {
+          calls += 1;
+          return http.Response('', 200);
+        }),
       );
-    }
-    expect(calls, 0);
-  });
+      for (final raw in [
+        'https://user:secret@cdn.test/artifact',
+        'https://cdn.test/artifact#fragment',
+      ]) {
+        await expectLater(
+          zed.downloadArtifact(_version([1], downloadUrl: raw)),
+          throwsA(
+            isA<ZedApiError>().having(
+              (error) => error.code,
+              'code',
+              'bad_download_url',
+            ),
+          ),
+        );
+      }
+      expect(calls, 0);
+    },
+  );
 
   test('restore sends the canonical false body with a trimmed token', () async {
     late http.Request seen;
@@ -212,8 +245,10 @@ void main() {
         200,
       );
     });
-    final result = await ZedClient(httpClient: mock, token: ' token ')
-        .restore('acme', 'kit', '1.2.0');
+    final result = await ZedClient(
+      httpClient: mock,
+      token: ' token ',
+    ).restore('acme', 'kit', '1.2.0');
     expect(result.yanked, isFalse);
     expect(seen.headers['authorization'], 'Bearer token');
     expect(jsonDecode(seen.body), {'yanked': false});
@@ -230,8 +265,13 @@ void main() {
     );
     await expectLater(
       zed.publish(_meta(), _HugeList()),
-      throwsA(isA<ZedApiError>()
-          .having((error) => error.code, 'code', 'artifact_too_large')),
+      throwsA(
+        isA<ZedApiError>().having(
+          (error) => error.code,
+          'code',
+          'artifact_too_large',
+        ),
+      ),
     );
     expect(calls, 0);
   });
