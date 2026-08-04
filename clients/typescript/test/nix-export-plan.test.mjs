@@ -134,14 +134,17 @@ test("unknown root and nested fields fail closed without echoing values", () => 
   );
 });
 
-test("wire-required bins and dependencies cannot be omitted", () => {
-  const missingBins = validPlan();
-  delete missingBins.bins;
-  assert.throws(() => parseNixExportPlan(missingBins), /missing field "bins"/);
-
-  const missingDependencies = validPlan();
-  delete missingDependencies.dependencies;
-  assert.throws(() => parseNixExportPlan(missingDependencies), /missing field "dependencies"/);
+test("omitted empty collections normalize to explicit canonical values", () => {
+  const omitted = validPlan();
+  delete omitted.bins;
+  delete omitted.dependencies;
+  const parsed = parseNixExportPlan(omitted);
+  assert.deepEqual(parsed.bins, {});
+  assert.deepEqual(parsed.dependencies, []);
+  assert.match(
+    canonicalNixExportPlanJson(omitted),
+    /"bins":\{\},"dependencies":\[\]/,
+  );
 });
 
 test("systems and outputs must already be canonical and unique", () => {
