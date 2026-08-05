@@ -89,6 +89,22 @@ jobs:
           '
           git diff --check
 
+          # The strict Dart stage intentionally treats any *unstaged* formatter
+          # output as drift. Stage the reviewed mechanical product delta before
+          # validation so each native formatter can verify the candidate tree
+          # without confusing the expected changes with fresh drift.
+          git add \
+            clients/go/nix_adapter.go \
+            clients/go/nix_adapter_test.go \
+            clients/rust/src/lib.rs \
+            clients/dart/lib/src/client.dart \
+            clients/dart/lib/src/models.dart \
+            clients/dart/test/hardening_test.dart \
+            clients/dart/test/zed_pkg_client_test.dart \
+            clients/gleam/src/zed_pkg_client.gleam \
+            clients/gleam/test/publish_hardening_test.gleam \
+            clients/gleam/test/zed_pkg_client_test.gleam
+
       - name: Validate every repaired SDK with the same pinned environment
         working-directory: zed-clients
         run: |
