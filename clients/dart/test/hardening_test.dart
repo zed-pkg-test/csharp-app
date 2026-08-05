@@ -41,10 +41,10 @@ class _SlowBodyClient extends http.BaseClient {
 }
 
 Map<String, dynamic> _meta({String org = 'acme'}) => {
-  'manifest': {
-    'package': {'org': org, 'name': 'kit', 'version': '1.2.0'},
-  },
-};
+      'manifest': {
+        'package': {'org': org, 'name': 'kit', 'version': '1.2.0'},
+      },
+    };
 
 VersionMetadata _version(List<int> body, {String downloadUrl = ''}) =>
     VersionMetadata(

@@ -28,7 +28,7 @@ const (
 	NixAdapterZedToNix NixAdapterDirection = "zed-to-nix"
 	NixAdapterNixToZed NixAdapterDirection = "nix-to-zed"
 
-	NixPolicyStrictV1     NixAdapterPolicyProfile = "strict-v1"
+	NixPolicyStrictV1    NixAdapterPolicyProfile = "strict-v1"
 	NixPolicyDevelopment NixAdapterPolicyProfile = "development"
 
 	NixBuilderNetworkDisabled        NixAdapterBuilderNetwork = "disabled"
@@ -50,13 +50,13 @@ type NixInteropArtifact struct {
 }
 
 type NixPolicyEvidence struct {
-	Profile              NixAdapterPolicyProfile `json:"profile"`
-	PureEvaluation       bool                    `json:"pure_evaluation"`
-	ImportFromDerivation bool                    `json:"import_from_derivation"`
-	SandboxRequired      bool                    `json:"sandbox_required"`
+	Profile              NixAdapterPolicyProfile  `json:"profile"`
+	PureEvaluation       bool                     `json:"pure_evaluation"`
+	ImportFromDerivation bool                     `json:"import_from_derivation"`
+	SandboxRequired      bool                     `json:"sandbox_required"`
 	BuilderNetwork       NixAdapterBuilderNetwork `json:"builder_network"`
-	DirtySource          bool                    `json:"dirty_source"`
-	Publishable          bool                    `json:"publishable"`
+	DirtySource          bool                     `json:"dirty_source"`
+	Publishable          bool                     `json:"publishable"`
 }
 
 type NixExportIntent struct {
@@ -139,8 +139,8 @@ type VerifiedNixAdapterArtifact struct {
 }
 
 var (
-	slugPattern       = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$`)
-	targetPattern     = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._+-]{0,126}[a-z0-9])?$`)
+	slugPattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$`)
+	targetPattern    = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._+-]{0,126}[a-z0-9])?$`)
 	nixIdentifier    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_'-]*$`)
 	nixStorePath     = regexp.MustCompile(`^/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?-]+$`)
 	sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)

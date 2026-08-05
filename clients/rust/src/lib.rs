@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use zed_interfaces::registry::{
@@ -629,9 +629,11 @@ mod tests {
         for raw in ["http://evil.example/artifact", "file:///etc/passwd"] {
             assert!(client.allowed_download_url(raw).is_err(), "accepted {raw}");
         }
-        assert!(client
-            .allowed_download_url("http://127.0.0.1:8080/a")
-            .is_ok());
+        assert!(
+            client
+                .allowed_download_url("http://127.0.0.1:8080/a")
+                .is_ok()
+        );
         assert!(client.allowed_download_url("https://cdn.example/a").is_ok());
         for invalid in [
             "../escape",
@@ -734,11 +736,13 @@ mod download_tests {
         );
         assert!(!request.to_lowercase().contains("authorization"));
         assert_eq!(fs::read(&destination).unwrap(), body);
-        assert!(fs::read_dir(&directory).unwrap().all(|entry| !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .contains(".zed-")));
+        assert!(fs::read_dir(&directory).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".zed-")
+        }));
         let _ = fs::remove_dir_all(&directory);
     }
 

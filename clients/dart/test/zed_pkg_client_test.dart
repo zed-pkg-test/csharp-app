@@ -11,17 +11,18 @@ VersionMetadata makeVersion({
   String sha256 = '',
   int size = 0,
   String downloadUrl = '',
-}) => VersionMetadata(
-  org: 'acme',
-  name: 'kit',
-  version: '1.2.0',
-  sha256: sha256,
-  size: size,
-  format: 'tar.gz',
-  vcsTag: 'v1.2.0',
-  downloadUrl: downloadUrl,
-  publishedAt: '2024-01-01T00:00:00Z',
-);
+}) =>
+    VersionMetadata(
+      org: 'acme',
+      name: 'kit',
+      version: '1.2.0',
+      sha256: sha256,
+      size: size,
+      format: 'tar.gz',
+      vcsTag: 'v1.2.0',
+      downloadUrl: downloadUrl,
+      publishedAt: '2024-01-01T00:00:00Z',
+    );
 
 void main() {
   test('url helpers match the contract', () {

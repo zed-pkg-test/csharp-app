@@ -214,9 +214,9 @@ final class ZedClient {
     required http.Client httpClient,
     required bool ownsHttpClient,
     required Duration timeout,
-  }) : _http = httpClient,
-       _ownsHttpClient = ownsHttpClient,
-       _timeout = timeout;
+  })  : _http = httpClient,
+        _ownsHttpClient = ownsHttpClient,
+        _timeout = timeout;
 
   final String base;
   final String? token;
@@ -264,9 +264,8 @@ final class ZedClient {
         if (candidate is String && candidate.trim().isNotEmpty) {
           code = candidate.trim();
         }
-        message = parsed['message'] is String
-            ? parsed['message'] as String
-            : text;
+        message =
+            parsed['message'] is String ? parsed['message'] as String : text;
       }
     } on FormatException {
       // Non-JSON error body remains available only through the explicit field.
@@ -281,8 +280,7 @@ final class ZedClient {
     required String overflowCode,
     required String description,
   }) async {
-    final declared =
-        int.tryParse(response.headers['content-length'] ?? '') ??
+    final declared = int.tryParse(response.headers['content-length'] ?? '') ??
         response.contentLength;
     if (declared != null && declared > limit && failOnOverflow) {
       throw ZedApiError(
@@ -339,7 +337,8 @@ final class ZedClient {
         overflowCode: successOverflowCode,
         description: successDescription,
       );
-    })().timeout(_timeout);
+    })()
+        .timeout(_timeout);
   }
 
   Future<Map<String, dynamic>> _requestJson(
@@ -387,17 +386,18 @@ final class ZedClient {
     String org,
     String name,
     String version,
-  ) async => VersionMetadata.fromJson(
-    await _requestJson('GET', versionPath(org, name, version)),
-  );
+  ) async =>
+      VersionMetadata.fromJson(
+        await _requestJson('GET', versionPath(org, name, version)),
+      );
 
   /// `GET /v1/search?q=`.
   Future<SearchResponse> search(String query) async => SearchResponse.fromJson(
-    await _requestJson(
-      'GET',
-      '/v1/search?q=${Uri.encodeQueryComponent(query)}',
-    ),
-  );
+        await _requestJson(
+          'GET',
+          '/v1/search?q=${Uri.encodeQueryComponent(query)}',
+        ),
+      );
 
   /// `POST /v1/orgs` (bearer token).
   Future<ClaimOrgResponse> claimOrg(String slug) async =>
@@ -415,14 +415,15 @@ final class ZedClient {
     String name,
     String version,
     bool yanked,
-  ) async => YankResponse.fromJson(
-    await _requestJson(
-      'POST',
-      yankPath(org, name, version),
-      body: {'yanked': yanked},
-      authorized: true,
-    ),
-  );
+  ) async =>
+      YankResponse.fromJson(
+        await _requestJson(
+          'POST',
+          yankPath(org, name, version),
+          body: {'yanked': yanked},
+          authorized: true,
+        ),
+      );
 
   /// Yank a version. The optional argument is retained for compatibility.
   Future<YankResponse> yank(
@@ -430,7 +431,8 @@ final class ZedClient {
     String name,
     String version, [
     bool yanked = true,
-  ]) async => setYanked(org, name, version, yanked);
+  ]) async =>
+      setYanked(org, name, version, yanked);
 
   /// Restore a previously yanked version.
   Future<YankResponse> restore(String org, String name, String version) async =>
@@ -480,9 +482,8 @@ final class ZedClient {
       );
     }
     final manifest = meta['manifest'];
-    final package = manifest is Map<String, dynamic>
-        ? manifest['package']
-        : null;
+    final package =
+        manifest is Map<String, dynamic> ? manifest['package'] : null;
     if (package is! Map<String, dynamic> ||
         package['org'] is! String ||
         package['name'] is! String ||
@@ -505,22 +506,21 @@ final class ZedClient {
       package['version'] as String,
       'meta.manifest.package.version',
     );
-    final request =
-        http.MultipartRequest(
-            'PUT',
-            Uri.parse('$base${versionPath(org, name, version)}'),
-          )
-          ..followRedirects = false
-          ..maxRedirects = 0
-          ..headers.addAll(_headers(authorized: true))
-          ..fields['meta'] = jsonEncode(meta)
-          ..files.add(
-            http.MultipartFile.fromBytes(
-              'artifact',
-              artifact,
-              filename: '$org-$name-$version.tar.gz',
-            ),
-          );
+    final request = http.MultipartRequest(
+      'PUT',
+      Uri.parse('$base${versionPath(org, name, version)}'),
+    )
+      ..followRedirects = false
+      ..maxRedirects = 0
+      ..headers.addAll(_headers(authorized: true))
+      ..fields['meta'] = jsonEncode(meta)
+      ..files.add(
+        http.MultipartFile.fromBytes(
+          'artifact',
+          artifact,
+          filename: '$org-$name-$version.tar.gz',
+        ),
+      );
     final bytes = await _sendBounded(
       request,
       successLimit: maxJsonResponseBytes,

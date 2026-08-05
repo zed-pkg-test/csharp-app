@@ -110,7 +110,10 @@ pub fn invalid_configuration_fails_before_transport_test() {
     case client.get_package(zed, "acme", "kit") {
       Error(client.InvalidConfiguration(message: _))
       | Error(client.InvalidInput(message: _)) -> Nil
-      other -> panic as { "expected invalid configuration, got " <> string.inspect(other) }
+      other ->
+        panic as {
+          "expected invalid configuration, got " <> string.inspect(other)
+        }
     }
   })
 
@@ -120,7 +123,8 @@ pub fn invalid_configuration_fails_before_transport_test() {
     |> client.with_transport(forbidden_transport)
   case client.search(invalid_timeout, "x") {
     Error(client.InvalidConfiguration(message: _)) -> Nil
-    other -> panic as { "expected invalid timeout, got " <> string.inspect(other) }
+    other ->
+      panic as { "expected invalid timeout, got " <> string.inspect(other) }
   }
 }
 
@@ -132,7 +136,8 @@ pub fn hostile_segments_fail_before_transport_test() {
   list.each(values, fn(value) {
     case client.get_package(zed, value, "kit") {
       Error(client.InvalidInput(message: _)) -> Nil
-      other -> panic as { "expected invalid segment, got " <> string.inspect(other) }
+      other ->
+        panic as { "expected invalid segment, got " <> string.inspect(other) }
     }
   })
   let overlong =
@@ -140,7 +145,8 @@ pub fn hostile_segments_fail_before_transport_test() {
     |> string.concat
   case client.get_version(zed, "acme", "kit", overlong) {
     Error(client.InvalidInput(message: _)) -> Nil
-    other -> panic as { "expected overlong rejection, got " <> string.inspect(other) }
+    other ->
+      panic as { "expected overlong rejection, got " <> string.inspect(other) }
   }
 }
 
@@ -230,11 +236,9 @@ pub fn api_errors_carry_the_registry_code_test() {
       }),
     )
   client.claim_org(zed, "acme")
-  |> should.equal(Error(client.ApiError(
-    status: 409,
-    code: "org_taken",
-    message: "claimed",
-  )))
+  |> should.equal(
+    Error(client.ApiError(status: 409, code: "org_taken", message: "claimed")),
+  )
 }
 
 pub fn blank_structured_error_code_uses_http_fallback_test() {
@@ -245,11 +249,9 @@ pub fn blank_structured_error_code_uses_http_fallback_test() {
       canned(409, "{\"code\":\"   \",\"message\":\"detail\"}", fn(_) { Nil }),
     )
   client.claim_org(zed, "acme")
-  |> should.equal(Error(client.ApiError(
-    status: 409,
-    code: "http_409",
-    message: "detail",
-  )))
+  |> should.equal(
+    Error(client.ApiError(status: 409, code: "http_409", message: "detail")),
+  )
 }
 
 pub fn non_json_error_bodies_map_to_http_status_test() {
@@ -257,11 +259,9 @@ pub fn non_json_error_bodies_map_to_http_status_test() {
     client.new("https://registry.zpkg.tech")
     |> client.with_transport(canned(500, "boom", fn(_) { Nil }))
   client.get_version(zed, "acme", "kit", "1.2.0")
-  |> should.equal(Error(client.ApiError(
-    status: 500,
-    code: "http_500",
-    message: "boom",
-  )))
+  |> should.equal(
+    Error(client.ApiError(status: 500, code: "http_500", message: "boom")),
+  )
 }
 
 pub fn oversized_error_body_is_not_retained_test() {
@@ -272,11 +272,13 @@ pub fn oversized_error_body_is_not_retained_test() {
     client.new("https://registry.zpkg.tech")
     |> client.with_transport(canned(502, body, fn(_) { Nil }))
   client.get_package(zed, "acme", "kit")
-  |> should.equal(Error(client.ApiError(
-    status: 502,
-    code: "http_502",
-    message: "registry error body exceeded the client limit",
-  )))
+  |> should.equal(
+    Error(client.ApiError(
+      status: 502,
+      code: "http_502",
+      message: "registry error body exceeded the client limit",
+    )),
+  )
 }
 
 pub fn yank_and_restore_post_the_canonical_flag_test() {
@@ -295,7 +297,10 @@ pub fn yank_and_restore_post_the_canonical_flag_test() {
         headers: [],
         body: bit_array.from_string(
           "{\"org\":\"acme\",\"name\":\"kit\",\"version\":\"1.2.0\",\"yanked\":"
-          <> case yanked { True -> "true" False -> "false" }
+          <> case yanked {
+            True -> "true"
+            False -> "false"
+          }
           <> "}",
         ),
       ))
@@ -406,7 +411,8 @@ pub fn publish_rejects_coordinate_mismatch_before_transport_test() {
     )
   case result {
     Error(client.InvalidInput(message: _)) -> Nil
-    other -> panic as { "expected coordinate mismatch, got " <> string.inspect(other) }
+    other ->
+      panic as { "expected coordinate mismatch, got " <> string.inspect(other) }
   }
 }
 

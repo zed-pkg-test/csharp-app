@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	testHexA  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	testHexB  = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	testHexC  = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-	testNARA  = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	testHexA   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testHexB   = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	testHexC   = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	testNARA   = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 	testStoreA = "/nix/store/00000000000000000000000000000000-tool-1.2.3"
 	testStoreB = "/nix/store/11111111111111111111111111111111-runtime-1.0.0"
 	testStoreC = "/nix/store/22222222222222222222222222222222-data-1.0.0"
