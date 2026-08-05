@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -18,15 +19,25 @@ EXPECTED_CLIENTS = {
     "dart",
     "gleam",
     "erlang",
+    "elixir",
     "java",
+    "kotlin",
+    "ruby",
+    "php",
     "swift",
 }
+
+EXPECTED_TYPESCRIPT_RUNTIMES = {"nodejs", "deno", "bun", "edge"}
 
 HISTORICALLY_STALE_YANK_MARKERS = {
     "typescript": (ROOT / "clients/typescript/src/client.ts", "yank("),
     "python": (ROOT / "clients/python/zed_pkg_client/__init__.py", "def yank("),
     "go": (ROOT / "clients/go/client.go", "func (c *Client) Yank("),
     "rust": (ROOT / "clients/rust/src/lib.rs", "pub fn yank("),
+    "elixir": (ROOT / "clients/elixir/lib/zed_pkg_client.ex", "def yank("),
+    "kotlin": (ROOT / "clients/kotlin/src/main/kotlin/tech/zpkg/client/ZedClient.kt", "fun yankJson("),
+    "ruby": (ROOT / "clients/ruby/lib/zed_pkg_client.rb", "def yank("),
+    "php": (ROOT / "clients/php/src/Client.php", "function yank("),
 }
 
 
@@ -46,9 +57,9 @@ def main() -> None:
         extra = sorted(documented_set - EXPECTED_CLIENTS)
         fail(f"README matrix mismatch; missing={missing}, extra={extra}")
 
-    required_claim = "All ten clients\nimplement that core lifecycle."
+    required_claim = "All fourteen clients\nimplement that core lifecycle."
     if required_claim not in readme:
-        fail("README must state that all ten clients implement the core lifecycle")
+        fail("README must state that all fourteen clients implement the core lifecycle")
 
     retired_claims = (
         "Completion of that operation in the older",
@@ -64,7 +75,16 @@ def main() -> None:
         if marker not in path.read_text(encoding="utf-8"):
             fail(f"{client} lost yank/restore marker {marker!r}")
 
-    print("zed-clients README and implemented core lifecycle are aligned")
+    package_json = json.loads((ROOT / "clients/typescript/package.json").read_text(encoding="utf-8"))
+    exports = package_json.get("exports", {})
+    for runtime in EXPECTED_TYPESCRIPT_RUNTIMES:
+        path = ROOT / "clients/typescript/src/runtimes" / runtime / "index.ts"
+        if not path.is_file():
+            fail(f"TypeScript runtime entry point is missing: {path.relative_to(ROOT)}")
+        if f"./{runtime}" not in exports:
+            fail(f"package.json export is missing for TypeScript runtime {runtime}")
+
+    print("zed-clients README, runtime exports, and implemented core lifecycle are aligned")
 
 
 if __name__ == "__main__":

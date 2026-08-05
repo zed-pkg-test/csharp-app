@@ -24,9 +24,10 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
-      - name: Validate the ten-language Zed target matrix
+      - name: Validate the fourteen-language Zed target matrix
         run: |
           python3 - <<'PY'
+          import json
           import pathlib
           import tomllib
 
@@ -36,6 +37,7 @@ jobs:
           with (root / ".zpkg.lock").open("rb") as handle:
               lock = tomllib.load(handle)
           assert lock["version"] == 1
+          assert manifest["dependencies"] == {"zed-pkg/zed-interfaces": "^0.1.0"}
 
           required = {
               "nodejs": ("clients/typescript", "package.json"),
@@ -46,7 +48,11 @@ jobs:
               "dart": ("clients/dart", "pubspec.yaml"),
               "gleam": ("clients/gleam", "gleam.toml"),
               "erlang": ("clients/erlang", "rebar.config"),
+              "elixir": ("clients/elixir", "mix.exs"),
               "java": ("clients/java", "pom.xml"),
+              "kotlin": ("clients/kotlin", "pom.xml"),
+              "ruby": ("clients/ruby", "zed_pkg_client.gemspec"),
+              "php": ("clients/php", "composer.json"),
               "swift": ("clients/swift", "Package.swift"),
           }
           targets = manifest["targets"]
@@ -60,8 +66,15 @@ jobs:
           assert targets["golang"]["native"]["package"].endswith("/clients/go")
           assert targets["golang"]["native"]["tag_format"] == "clients/go/v{version}"
           assert targets["java"]["native"]["package"] == "tech.zpkg:zed-client"
-          print("zed-clients ten-language matrix is complete")
+          assert targets["kotlin"]["native"]["package"] == "tech.zpkg:zed-client-kotlin"
+
+          package_json = json.loads((root / "clients/typescript/package.json").read_text())
+          for runtime in ("nodejs", "deno", "bun", "edge"):
+              assert f"./{runtime}" in package_json["exports"]
+              assert (root / "clients/typescript/src/runtimes" / runtime / "index.ts").is_file()
+          print("zed-clients fourteen-language matrix is complete")
           PY
+          python3 scripts/check-client-capability-drift.py
 
   rust:
     runs-on: ubuntu-latest
@@ -114,7 +127,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 22
-      - run: npm install && npm run build && npm test
+      - run: npm ci && npm run build && npm test
         working-directory: clients/typescript
 
   python:
@@ -186,6 +199,20 @@ jobs:
       - run: rebar3 compile && rebar3 eunit
         working-directory: clients/erlang
 
+  elixir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93
+        with:
+          otp-version: "27"
+          elixir-version: "1.17"
+      - run: mix deps.get && mix test
+        working-directory: clients/elixir
+
   java:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -196,6 +223,37 @@ jobs:
       - run: java -version
       - run: mvn --batch-mode --no-transfer-progress verify
         working-directory: clients/java
+
+  kotlin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: java -version
+      - run: mvn --batch-mode --no-transfer-progress verify
+        working-directory: clients/kotlin
+
+  ruby:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: ruby -c lib/zed_pkg_client.rb && ruby -Ilib test/client_test.rb
+        working-directory: clients/ruby
+
+  php:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: php -l src/Client.php && php tests/client_test.php
+        working-directory: clients/php
 
   swift:
     runs-on: ubuntu-latest

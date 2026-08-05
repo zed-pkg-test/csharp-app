@@ -5,8 +5,30 @@
   "license": "MIT",
   "repository": "github:zed-pkg/zed-clients",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./nodejs": {
+      "types": "./dist/runtimes/nodejs/index.d.ts",
+      "default": "./dist/runtimes/nodejs/index.js"
+    },
+    "./deno": {
+      "types": "./dist/runtimes/deno/index.d.ts",
+      "default": "./dist/runtimes/deno/index.js"
+    },
+    "./bun": {
+      "types": "./dist/runtimes/bun/index.d.ts",
+      "default": "./dist/runtimes/bun/index.js"
+    },
+    "./edge": {
+      "types": "./dist/runtimes/edge/index.d.ts",
+      "default": "./dist/runtimes/edge/index.js"
+    }
+  },
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p .",

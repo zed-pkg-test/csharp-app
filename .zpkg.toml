@@ -21,9 +21,7 @@ include_readme = true
 tag_format = "v{version}"
 exclude = [".vendor/.zed/**"]
 
-# The whole-repository release surface (zed-docs doc 18). Not a consumer
-# dependency and never routed to by `zed add` -- it exists so a release can
-# ship the complete reviewed snapshot alongside the per-language slices.
+# Whole-repository release surface. Consumers should select a language slice.
 [targets.repository]
 dir = "."
 
@@ -41,8 +39,6 @@ dir = "clients/go"
 name = "zed-clients-golang"
 adapter = "go"
 
-# The module proxy resolves a subdirectory module by `<subdir>/vX.Y.Z`,
-# which the repo-global [publish].tag_format cannot express.
 [targets.golang.native]
 registry = "go-modules"
 package = "github.com/zed-pkg/zed-clients/clients/go"
@@ -61,16 +57,16 @@ adapter = "node"
 dir = "clients/dart"
 adapter = "dart"
 
-# The pinned zed toolchain recognizes Gleam and Erlang as language targets but
-# does not yet provide consumer installers. Keep the language-gated slices
-# publishable while native BEAM dependency wiring remains the package manager's
-# job.
 [targets.gleam]
 dir = "clients/gleam"
 adapter = "none"
 
 [targets.erlang]
 dir = "clients/erlang"
+adapter = "none"
+
+[targets.elixir]
+dir = "clients/elixir"
 adapter = "none"
 
 [targets.java]
@@ -81,6 +77,23 @@ adapter = "java"
 registry = "maven-central"
 package = "tech.zpkg:zed-client"
 forge = ["github-packages", "gitlab-packages", "bitbucket-packages"]
+
+[targets.kotlin]
+dir = "clients/kotlin"
+adapter = "java"
+
+[targets.kotlin.native]
+registry = "maven-central"
+package = "tech.zpkg:zed-client-kotlin"
+forge = ["github-packages", "gitlab-packages", "bitbucket-packages"]
+
+[targets.ruby]
+dir = "clients/ruby"
+adapter = "none"
+
+[targets.php]
+dir = "clients/php"
+adapter = "none"
 
 [targets.swift]
 dir = "clients/swift"
