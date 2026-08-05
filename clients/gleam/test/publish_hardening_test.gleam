@@ -30,8 +30,7 @@ pub fn malformed_publish_meta_fails_before_transport_test() {
     Error(client.InvalidResponse(message: _)) -> Nil
     other ->
       panic as {
-        "expected malformed metadata rejection, got "
-        <> string.inspect(other)
+        "expected malformed metadata rejection, got " <> string.inspect(other)
       }
   }
 }

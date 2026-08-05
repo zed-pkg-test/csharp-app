@@ -141,20 +141,25 @@ fn normalize_base(base: String) -> Result(String, ClientError) {
   use parsed <- result.try(
     uri.parse(trimmed)
     |> result.map_error(fn(_) {
-      InvalidConfiguration(message: "registry URL must be an absolute HTTP(S) URL")
+      InvalidConfiguration(
+        message: "registry URL must be an absolute HTTP(S) URL",
+      )
     }),
   )
   use _ <- result.try(validate_path(parsed.path, "registry URL path"))
-  case #(
-    parsed.scheme,
-    parsed.userinfo,
-    parsed.host,
-    parsed.query,
-    parsed.fragment,
-  ) {
+  case
+    #(
+      parsed.scheme,
+      parsed.userinfo,
+      parsed.host,
+      parsed.query,
+      parsed.fragment,
+    )
+  {
     #(Some("http"), None, Some(host), None, None)
-    | #(Some("https"), None, Some(host), None, None) if host != "" ->
-      Ok(trim_trailing_slashes(trimmed))
+      | #(Some("https"), None, Some(host), None, None)
+      if host != ""
+    -> Ok(trim_trailing_slashes(trimmed))
     _ ->
       Error(InvalidConfiguration(
         message: "registry URL must be credential-free absolute HTTP(S) without query or fragment",
@@ -194,9 +199,10 @@ fn validate_path_segments(
             message: name <> " segments must not contain encoded separators",
           ))
         False -> {
-          use _ <- result.try(
-            validate_segment(decoded, name <> " segment " <> int.to_string(index)),
-          )
+          use _ <- result.try(validate_segment(
+            decoded,
+            name <> " segment " <> int.to_string(index),
+          ))
           validate_path_segments(rest, name, index + 1)
         }
       }
@@ -204,7 +210,10 @@ fn validate_path_segments(
   }
 }
 
-fn validate_segment(segment: String, name: String) -> Result(String, ClientError) {
+fn validate_segment(
+  segment: String,
+  name: String,
+) -> Result(String, ClientError) {
   let size =
     segment
     |> bit_array.from_string
@@ -221,7 +230,7 @@ fn validate_segment(segment: String, name: String) -> Result(String, ClientError
     True ->
       Error(InvalidInput(
         message: name
-          <> " must be nonblank, non-dot, bounded, and free of control characters",
+        <> " must be nonblank, non-dot, bounded, and free of control characters",
       ))
     False -> Ok(segment)
   }
@@ -266,7 +275,10 @@ pub fn yank_path(org: String, name: String, version: String) -> String {
   version_path(org, name, version) <> "/yank"
 }
 
-fn checked_package_path(org: String, name: String) -> Result(String, ClientError) {
+fn checked_package_path(
+  org: String,
+  name: String,
+) -> Result(String, ClientError) {
   use org <- result.try(validate_segment(org, "org"))
   use name <- result.try(validate_segment(name, "name"))
   Ok(package_path(org, name))
@@ -300,8 +312,7 @@ pub fn allowed_download_url(
   base: String,
 ) -> Result(String, ClientError) {
   case uri.parse(raw) {
-    Error(_) ->
-      Error(InsecureDownloadUrl(message: "bad download url"))
+    Error(_) -> Error(InsecureDownloadUrl(message: "bad download url"))
     Ok(parsed) ->
       case #(parsed.userinfo, parsed.host, parsed.fragment) {
         #(None, Some(host), None) if host != "" -> {
@@ -393,7 +404,10 @@ pub fn verify_sha256(
   }
 }
 
-fn base_request(client: Client, path: String) -> Result(Request(BitArray), ClientError) {
+fn base_request(
+  client: Client,
+  path: String,
+) -> Result(Request(BitArray), ClientError) {
   use _ <- result.try(ensure_configured(client))
   case request.to(client.base <> path) {
     Ok(req) ->
@@ -411,7 +425,8 @@ fn authorize(
   req: Request(BitArray),
 ) -> Result(Request(BitArray), ClientError) {
   case client.token {
-    Some(token) -> Ok(request.set_header(req, "authorization", "Bearer " <> token))
+    Some(token) ->
+      Ok(request.set_header(req, "authorization", "Bearer " <> token))
     None -> Error(MissingToken)
   }
 }
@@ -461,7 +476,11 @@ fn check(
                 "" -> fallback_code
                 code -> code
               }
-              Error(ApiError(status: response.status, code: code, message: message))
+              Error(ApiError(
+                status: response.status,
+                code: code,
+                message: message,
+              ))
             }
             Error(_) ->
               Error(ApiError(
@@ -485,7 +504,9 @@ fn decode_json(
     Ok(text) ->
       json.parse(from: text, using: decoder)
       |> result.map_error(fn(error) {
-        InvalidResponse(message: "invalid registry response: " <> string.inspect(error))
+        InvalidResponse(
+          message: "invalid registry response: " <> string.inspect(error),
+        )
       })
   }
 }
@@ -626,9 +647,11 @@ pub fn download_artifact(
   version: VersionMetadata,
 ) -> Result(BitArray, ClientError) {
   use _ <- result.try(ensure_configured(client))
-  use url <- result.try(
-    resolve_download_url(version.download_url, client.base, version.sha256),
-  )
+  use url <- result.try(resolve_download_url(
+    version.download_url,
+    client.base,
+    version.sha256,
+  ))
   use req <- result.try(case request.to(url) {
     Ok(req) -> Ok(request.set_body(req, <<>>))
     Error(_) -> Error(InvalidResponse(message: "invalid download url"))
@@ -669,15 +692,18 @@ pub fn multipart_body(
 }
 
 fn publish_coordinate_decoder() -> decode.Decoder(#(String, String, String)) {
-  use org <- decode.then(
-    decode.at(["manifest", "package", "org"], decode.string),
-  )
-  use name <- decode.then(
-    decode.at(["manifest", "package", "name"], decode.string),
-  )
-  use version <- decode.then(
-    decode.at(["manifest", "package", "version"], decode.string),
-  )
+  use org <- decode.then(decode.at(
+    ["manifest", "package", "org"],
+    decode.string,
+  ))
+  use name <- decode.then(decode.at(
+    ["manifest", "package", "name"],
+    decode.string,
+  ))
+  use version <- decode.then(decode.at(
+    ["manifest", "package", "version"],
+    decode.string,
+  ))
   decode.success(#(org, name, version))
 }
 
@@ -703,17 +729,17 @@ pub fn publish(
   case bit_array.byte_size(artifact) > max_artifact_bytes {
     True -> Error(ArtifactTooLarge(limit: max_artifact_bytes))
     False -> {
-      use coordinate <- result.try(
-        decode_json(bit_array.from_string(meta_json), publish_coordinate_decoder()),
-      )
+      use coordinate <- result.try(decode_json(
+        bit_array.from_string(meta_json),
+        publish_coordinate_decoder(),
+      ))
       case coordinate == #(org, name, version) {
         False ->
           Error(InvalidInput(
             message: "publish route and meta.manifest.package coordinates differ",
           ))
         True -> {
-          let boundary =
-            "zedpkg" <> sha256_hex(crypto.strong_random_bytes(16))
+          let boundary = "zedpkg" <> sha256_hex(crypto.strong_random_bytes(16))
           use path <- result.try(checked_version_path(org, name, version))
           use req <- result.try(base_request(client, path))
           let req =
@@ -723,14 +749,12 @@ pub fn publish(
               "content-type",
               "multipart/form-data; boundary=" <> boundary,
             )
-            |> request.set_body(
-              multipart_body(
-                boundary,
-                meta_json,
-                "artifact.tar.gz",
-                artifact,
-              ),
-            )
+            |> request.set_body(multipart_body(
+              boundary,
+              meta_json,
+              "artifact.tar.gz",
+              artifact,
+            ))
           use req <- result.try(authorize(client, req))
           use response <- result.try(send(client, req))
           use bytes <- result.try(check(response, max_json_response_bytes))
