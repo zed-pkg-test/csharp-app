@@ -1,0 +1,15 @@
+name: Oreslang JS continuation fence carrier
+on:
+  push:
+    branches:
+      - ci/oreslang-js-fence-1e7f4c7b-20261026
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test oreslang-fence-carrier/js/tests/select-continuation-fence.test.mjs
