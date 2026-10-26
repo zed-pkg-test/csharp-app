@@ -1,0 +1,15 @@
+name: Oreslang .NET continuation fence carrier
+on:
+  push:
+    branches:
+      - ci/oreslang-net-fence-4bdcd25c-20261026
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet run --project oreslang-fence-carrier/net/OresFenceCarrier.csproj -c Release
