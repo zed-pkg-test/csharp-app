@@ -266,3 +266,91 @@ extern "C" int ores_native_i64_channel1_try_commit_write(
         return committed ? 1 : 0;
     });
 }
+
+
+namespace {
+struct SelectReadCommitContext {
+    OresNativeI64Channel1* channel;
+    const OresNativeI64ChannelPermit* permit;
+    OresNativeI64ChannelBatch* batch;
+    int* status;
+    int64_t* value;
+    bool failed = false;
+};
+
+int select_read_commit(void* raw) noexcept {
+    auto* context = static_cast<SelectReadCommitContext*>(raw);
+    const int result = ores_native_i64_channel1_try_commit_read(
+        context->channel, context->permit, context->batch,
+        context->status, context->value);
+    if (result < 0) {
+        context->failed = true;
+        return 0;
+    }
+    return result == 1 ? 1 : 0;
+}
+
+struct SelectWriteCommitContext {
+    OresNativeI64Channel1* channel;
+    const OresNativeI64ChannelPermit* permit;
+    int64_t value;
+    OresNativeI64ChannelBatch* batch;
+    int* status;
+    bool failed = false;
+};
+
+int select_write_commit(void* raw) noexcept {
+    auto* context = static_cast<SelectWriteCommitContext*>(raw);
+    const int result = ores_native_i64_channel1_try_commit_write(
+        context->channel, context->permit, context->value,
+        context->batch, context->status);
+    if (result < 0) {
+        context->failed = true;
+        return 0;
+    }
+    return result == 1 ? 1 : 0;
+}
+}  // namespace
+
+extern "C" int ores_native_select2_try_commit_i64_read(
+        OresNativeSelect2* select,
+        uint32_t index,
+        OresNativeI64Channel1* channel,
+        const OresNativeI64ChannelPermit* permit,
+        int* status,
+        int64_t* value) {
+    if (!select || !channel || !permit || !status || !value)
+        return -1;
+    *status = ORES_NATIVE_I64_READ_WOULD_BLOCK;
+    *value = 0;
+
+    OresNativeI64ChannelBatch batch;
+    SelectReadCommitContext context{
+        channel, permit, &batch, status, value, false};
+    const int won = ores_native_select2_try_win_if(
+        select, index, select_read_commit, &context);
+    batch.batch.dispatch();
+    if (context.failed || won < 0) return -1;
+    return won;
+}
+
+extern "C" int ores_native_select2_try_commit_i64_write(
+        OresNativeSelect2* select,
+        uint32_t index,
+        OresNativeI64Channel1* channel,
+        const OresNativeI64ChannelPermit* permit,
+        int64_t value,
+        int* status) {
+    if (!select || !channel || !permit || !status)
+        return -1;
+    *status = ORES_NATIVE_I64_WRITE_WOULD_BLOCK;
+
+    OresNativeI64ChannelBatch batch;
+    SelectWriteCommitContext context{
+        channel, permit, value, &batch, status, false};
+    const int won = ores_native_select2_try_win_if(
+        select, index, select_write_commit, &context);
+    batch.batch.dispatch();
+    if (context.failed || won < 0) return -1;
+    return won;
+}
