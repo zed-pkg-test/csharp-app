@@ -13,30 +13,13 @@ struct ReadCase {
     int64_t value = 0;
 };
 
-struct CommitRead {
-    ReadCase* arm;
-    const OresNativeI64ChannelPermit* permit;
-    OresNativeI64ChannelBatch* batch;
-};
-
-static int commit_read(void* raw) {
-    auto* ctx = static_cast<CommitRead*>(raw);
-    return ores_native_i64_channel1_try_commit_read(
-        ctx->arm->channel, ctx->permit, ctx->batch,
-        &ctx->arm->status, &ctx->arm->value);
-}
-
 static void readable(void* raw, const OresNativeI64ChannelPermit* permit) {
     auto* arm = static_cast<ReadCase*>(raw);
     ++arm->callbacks;
-    auto* batch = ores_native_i64_channel_batch_open();
-    assert(batch != nullptr);
-    CommitRead commit{arm, permit, batch};
-    const int won = ores_native_select2_try_win_if(
-        arm->select, arm->index, commit_read, &commit);
+    const int won = ores_native_select2_try_commit_i64_read(
+        arm->select, arm->index, arm->channel, permit,
+        &arm->status, &arm->value);
     assert(won >= 0);
-    assert(ores_native_i64_channel_batch_dispatch(batch) == 1);
-    assert(ores_native_i64_channel_batch_destroy(batch) == 1);
     if (won == 1) ++arm->wins;
 }
 
@@ -109,30 +92,12 @@ struct WriteCase {
     int status = -1;
 };
 
-struct CommitWrite {
-    WriteCase* arm;
-    const OresNativeI64ChannelPermit* permit;
-    OresNativeI64ChannelBatch* batch;
-};
-
-static int commit_write(void* raw) {
-    auto* ctx = static_cast<CommitWrite*>(raw);
-    return ores_native_i64_channel1_try_commit_write(
-        ctx->arm->channel, ctx->permit, 8, ctx->batch,
-        &ctx->arm->status);
-}
-
 static void writable(void* raw, const OresNativeI64ChannelPermit* permit) {
     auto* arm = static_cast<WriteCase*>(raw);
     ++arm->callbacks;
-    auto* batch = ores_native_i64_channel_batch_open();
-    assert(batch != nullptr);
-    CommitWrite commit{arm, permit, batch};
-    const int won = ores_native_select2_try_win_if(
-        arm->select, 0, commit_write, &commit);
+    const int won = ores_native_select2_try_commit_i64_write(
+        arm->select, 0, arm->channel, permit, 8, &arm->status);
     assert(won >= 0);
-    assert(ores_native_i64_channel_batch_dispatch(batch) == 1);
-    assert(ores_native_i64_channel_batch_destroy(batch) == 1);
     if (won == 1) ++arm->wins;
 }
 
