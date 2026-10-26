@@ -1,5 +1,5 @@
 #pragma once
-#include <stdint.h>
+#include <stdint.h>\n#include "oreslang/runtime/NativeSelectAbi.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -66,6 +66,21 @@ int ores_native_i64_channel1_try_commit_write(
     const OresNativeI64ChannelPermit*,
     int64_t value,
     OresNativeI64ChannelBatch*,
+    int* status);
+
+int ores_native_select2_try_commit_i64_read(
+    OresNativeSelect2*,
+    uint32_t index,
+    OresNativeI64Channel1*,
+    const OresNativeI64ChannelPermit*,
+    int* status,
+    int64_t* value);
+int ores_native_select2_try_commit_i64_write(
+    OresNativeSelect2*,
+    uint32_t index,
+    OresNativeI64Channel1*,
+    const OresNativeI64ChannelPermit*,
+    int64_t value,
     int* status);
 
 #ifdef __cplusplus
