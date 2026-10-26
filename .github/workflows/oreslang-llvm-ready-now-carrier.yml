@@ -1,0 +1,20 @@
+name: Oreslang LLVM ready-now select carrier
+on:
+  push:
+    branches:
+      - ci/oreslang-llvm-ready-now-8b65366c-20261026
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run strict C++17 ready-now proof
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Wpedantic -Werror -UNDEBUG \
+            -I oreslang-ready-now-carrier/src/main/cpp \
+            oreslang-ready-now-carrier/src/main/cpp/oreslang/runtime/NativeSelectAbi.cpp \
+            oreslang-ready-now-carrier/src/main/cpp/oreslang/runtime/NativeI64ChannelAbi.cpp \
+            oreslang-ready-now-carrier/tests/native_i64_channel_c_abi_test.cpp \
+            -o /tmp/oreslang-ready-now
+          /tmp/oreslang-ready-now
