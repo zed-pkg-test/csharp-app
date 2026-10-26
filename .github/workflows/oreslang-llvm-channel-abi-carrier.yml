@@ -18,3 +18,18 @@ jobs:
             oreslang-channel-abi-carrier/tests/native_i64_channel_c_abi_test.cpp \
             -o /tmp/oreslang-channel-select-abi
           /tmp/oreslang-channel-select-abi
+      - name: Compile and run LLVM IR ABI probe
+        run: |
+          clang++ -std=c++17 -Wall -Wextra -Wpedantic -Werror -UNDEBUG \
+            -I oreslang-channel-abi-carrier/src/main/cpp \
+            -c oreslang-channel-abi-carrier/src/main/cpp/oreslang/runtime/NativeSelectAbi.cpp \
+            -o /tmp/native-select-abi.o
+          clang++ -std=c++17 -Wall -Wextra -Wpedantic -Werror -UNDEBUG \
+            -I oreslang-channel-abi-carrier/src/main/cpp \
+            -c oreslang-channel-abi-carrier/src/main/cpp/oreslang/runtime/NativeI64ChannelAbi.cpp \
+            -o /tmp/native-channel-abi.o
+          clang++ -c oreslang-channel-abi-carrier/tests/native_select_i64_c_abi_ir_probe.ll \
+            -o /tmp/select-ir-probe.o
+          clang++ /tmp/native-select-abi.o /tmp/native-channel-abi.o \
+            /tmp/select-ir-probe.o -o /tmp/select-ir-probe
+          /tmp/select-ir-probe
