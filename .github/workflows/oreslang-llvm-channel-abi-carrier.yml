@@ -1,0 +1,20 @@
+name: Oreslang LLVM selectable channel C ABI carrier
+on:
+  push:
+    branches:
+      - ci/oreslang-llvm-channel-abi-b2c0f6b5-20261026
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run strict C++17 channel/select ABI proof
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Wpedantic -Werror -UNDEBUG \
+            -I oreslang-channel-abi-carrier/src/main/cpp \
+            oreslang-channel-abi-carrier/src/main/cpp/oreslang/runtime/NativeSelectAbi.cpp \
+            oreslang-channel-abi-carrier/src/main/cpp/oreslang/runtime/NativeI64ChannelAbi.cpp \
+            oreslang-channel-abi-carrier/tests/native_i64_channel_c_abi_test.cpp \
+            -o /tmp/oreslang-channel-select-abi
+          /tmp/oreslang-channel-select-abi
