@@ -16,7 +16,8 @@ static auto bind_future(Future& future,
                         int& side_effects,
                         int side_effect_delta = 0) {
     return future.subscribe_ready(
-        [&](const typename Future::Subscription& subscription) {
+        [&future, &registration, &result, &callbacks, &side_effects,
+         side_effect_delta](const typename Future::Subscription& subscription) {
             ++callbacks;
             typename Future::Result candidate;
             const bool won = registration.try_win_if([&] {
