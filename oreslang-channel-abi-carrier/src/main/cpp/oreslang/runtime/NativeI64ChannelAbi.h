@@ -1,5 +1,6 @@
 #pragma once
-#include <stdint.h>\n#include "oreslang/runtime/NativeSelectAbi.h"
+#include <stdint.h>
+#include "oreslang/runtime/NativeSelectAbi.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
