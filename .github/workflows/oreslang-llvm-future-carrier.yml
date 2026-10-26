@@ -1,0 +1,18 @@
+name: Oreslang LLVM selectable Future carrier
+on:
+  push:
+    branches:
+      - ci/oreslang-llvm-future-8d048024-20261026
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run exact-file C++17 Future proof
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Wpedantic -Werror -UNDEBUG \
+            -I oreslang-future-carrier/llvm/src/main/cpp \
+            oreslang-future-carrier/llvm/tests/native_selectable_i64_future_test.cpp \
+            -o /tmp/oreslang-select-future
+          /tmp/oreslang-select-future
