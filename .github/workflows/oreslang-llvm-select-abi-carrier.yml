@@ -1,0 +1,19 @@
+name: Oreslang LLVM select C ABI carrier
+on:
+  push:
+    branches:
+      - ci/oreslang-llvm-select-abi-182ea93f-20261026
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run strict C++17 C ABI proof
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Wpedantic -Werror -UNDEBUG \
+            -I oreslang-select-abi-carrier/src/main/cpp \
+            oreslang-select-abi-carrier/src/main/cpp/oreslang/runtime/NativeSelectAbi.cpp \
+            oreslang-select-abi-carrier/tests/native_select_c_abi_test.cpp \
+            -o /tmp/oreslang-select-abi
+          /tmp/oreslang-select-abi
