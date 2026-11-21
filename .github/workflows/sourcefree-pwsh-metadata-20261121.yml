@@ -1,0 +1,66 @@
+# Public source-free GitHub Actions probe. No repository checkout, private
+# Git objects, access token, cross-org Git fetch, external code or secrets.
+name: Source-free PowerShell JSON admission semantics
+on:
+  push:
+    branches:
+      - ci/sourcefree-pwsh-metadata-20261121
+    paths:
+      - .github/workflows/sourcefree-pwsh-metadata-20261121.yml
+permissions: {}
+jobs:
+  test:
+    name: source-free PowerShell JSON admission (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    steps:
+      - name: Exercise PowerShell 7 JSON decoding and strict Boolean/int/SHA checks
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Deliberately synthetic values; no Atto private source or GitHub API.
+          $sha = '0123456789abcdef0123456789abcdef01234567'
+          function Gate([object]$branch, [object]$pr) {
+            if ($branch.name -cne 'main' -or -not ($branch.protected -is [bool]) -or
+                $branch.protected -ne $true) { return $false }
+            if (-not (($pr.number -is [int]) -or ($pr.number -is [long])) -or
+                $pr.number -ne 33 -or $pr.head.sha -cne $sha -or
+                $pr.head.repo.full_name -cne 'synthetic/ci') { return $false }
+            return $true
+          }
+          function Branch([object]$flag, [string]$name = 'main') {
+            return [pscustomobject]@{name=$name; protected=$flag}
+          }
+          function PR([object]$num, [string]$head = $sha, [string]$repo = 'synthetic/ci') {
+            return [pscustomobject]@{number=$num; head=[pscustomobject]@{
+              sha=$head; repo=[pscustomobject]@{full_name=$repo}
+            }}
+          }
+          $script:checks = 0
+          function Check([string]$label, [object]$b, [object]$p, [bool]$want) {
+            $got = [bool](Gate $b $p)
+            if ($got -ne $want) { throw "SOURCE_FREE_PWSH_FAILED label=$label got=$got expected=$want" }
+            $script:checks++
+          }
+          # Test real JSON numeric deserialization, not only literal PS types.
+          $jsonBranch = '{"name":"main","protected":true}' | ConvertFrom-Json
+          $jsonPR = ('{"number":33,"head":{"sha":"' + $sha +
+             '","repo":{"full_name":"synthetic/ci"}}}') | ConvertFrom-Json
+          Check 'valid-json' $jsonBranch $jsonPR $true
+          Check 'valid-int32' (Branch $true) (PR ([int]33)) $true
+          Check 'valid-int64' (Branch $true) (PR ([long]33)) $true
+          Check 'false-boolean' (Branch $false) (PR 33) $false
+          Check 'string-true' (Branch 'true') (PR 33) $false
+          Check 'numeric-true' (Branch 1) (PR 33) $false
+          Check 'null-protection' (Branch $null) (PR 33) $false
+          Check 'casefold-branch' (Branch $true 'MAIN') (PR 33) $false
+          Check 'string-pr-number' (Branch $true) (PR '33') $false
+          Check 'incorrect-pr-number' (Branch $true) (PR 34) $false
+          Check 'fork-repo' (Branch $true) (PR 33 $sha 'untrusted/ci') $false
+          Check 'uppercase-sha' (Branch $true) (PR 33 $sha.ToUpperInvariant()) $false
+          if ($script:checks -ne 12) { throw "SOURCE_FREE_PWSH_INCOMPLETE $script:checks" }
+          "SOURCE_FREE_PWSH_JSON_ADMISSION_PASS checks=$script:checks network=NONE source_export=NONE"
