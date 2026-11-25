@@ -1,0 +1,79 @@
+name: Conformance verified integrations D
+on:
+  push:
+    branches: ['ci/conformance-next-ten-20261125-d']
+permissions: {}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pr: 72
+            sha: '0587b6c7fc48cdbd3eb9dc2be1d6197846b7df2d'
+            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
+            command: 'node --test tests/bitwise-operators-v1.test.mjs'
+          - pr: 483
+            sha: '346bd10c4e1ec5887cee548c394e454d5651dbe1'
+            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
+            command: 'node --test tests/declaration-scope-v1.test.mjs'
+          - pr: 500
+            sha: 'a47e20a0ee796541eae2bc65fadaa5e4a04026c0'
+            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
+            command: 'node --test tests/borrow-mir-v1-contract.test.mjs'
+          - pr: 333
+            sha: '080674f6e87024e2b97570888f5cbb800ebcfbb1'
+            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
+            command: 'node --test tests/atto-gpu-kernels-v1.test.mjs'
+          - pr: 274
+            sha: 'f4e040f0686985662c3965fddb58e0c85e7c1711'
+            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
+            command: 'node --test tests/actor-ownership-*-v1.test.mjs'
+          - pr: 253
+            sha: '8f07fb826d6ca02fc1b9ad62a9cfe0afda0206f5'
+            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
+            command: 'node --test parity/integration/tests/*.test.mjs'
+          - pr: 277
+            sha: '493a87f256197af4786e76125158268cf39540aa'
+            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
+            command: 'node --test tests/critical-*.test.mjs'
+          - pr: 331
+            sha: 'f17a27d4892633f0b4af192d2e1d13a8cd4d3082'
+            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
+            command: 'node --test test/atto-gpu-cuda-parity-map-v1.test.mjs test/gpu-*.test.mjs tests/gpu-g1-typed-frontend-corpus.test.mjs'
+          - pr: 550
+            sha: '4b4ba11fb18ebc1fb0c325df010313304bcebd96'
+            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
+            command: 'node --test tests/atto-source-repository-parity-audit-v1.test.mjs tests/ci-recovery-evidence-20261121-v1.test.mjs tests/control-actor-memory-11-backend-audit-v1.test.mjs tests/control-ref32-bit-vectors-v1.test.mjs tests/exception-control-bang-source-audit-v1.test.mjs tests/git-replace-integrity-v1.test.mjs tests/std-protocol-11-backend-evidence-v1.test.mjs tests/std-udp-11-backend-evidence-v1.test.mjs'
+          - pr: 117
+            sha: 'ba10cd097a5ce6cbabcd29d7f3fe7da4a29ebc1b'
+            base: '79a660f8c744cbd4b1b1547576813a373386de1d'
+            command: 'node --test tests/map-of-entries-nominal-struct-v1.test.mjs tests/contextual-collection-pair-entry-v1.test.mjs'
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Test pinned public source integration
+        env:
+          CANDIDATE: ${{ matrix.sha }}
+          BASE: ${{ matrix.base }}
+        run: |
+          set -euo pipefail
+          git init source
+          cd source
+          git config user.email 'ci@example.invalid'
+          git config user.name 'Integration verifier'
+          git -c credential.helper= -c http.extraheader= fetch --no-tags https://github.com/atto-lang/atto-platform-conformance.git "$BASE" "$CANDIDATE"
+          git checkout --detach "$BASE"
+          test "$(git rev-parse HEAD)" = "$BASE"
+          test "$(git rev-parse "$CANDIDATE^{commit}")" = "$CANDIDATE"
+          git merge --no-commit --no-ff "$CANDIDATE"
+          echo "INTEGRATION_TREE=$(git write-tree)"
+          git diff --cached --stat
+          ${{ matrix.command }}
+          if [ "${{ matrix.pr }}" != 117 ]; then
+            node --test tests/actor-counter-parity.test.mjs tests/core-option-borrow-parity-v1.test.mjs tests/atto-canonical-syntax-v1.test.mjs tests/eleven-backend-parity-v1.test.mjs
+          fi
+          git diff --exit-code
