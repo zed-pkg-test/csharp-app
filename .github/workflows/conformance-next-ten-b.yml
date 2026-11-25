@@ -11,21 +11,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - pr: 52
-            sha: '85c6f1ef85a4b17533612dd4acc9405b205c8056'
-            tests: 'tests/adt-lazy-guard-v2.test.mjs tests/adt-when-guard-v1.test.mjs tests/typed-arm-task-capture-v1.test.mjs'
-          - pr: 104
-            sha: '7389741b0e9c3b39fc0e4fa5024a43d528b0aa31'
-            tests: 'tests/byte-buffer-v1-experimental-wasm.test.mjs tests/byte-buffer-v1-host-evidence.test.mjs tests/byte-buffer-v1.test.mjs tests/core-alloc-std-v1.test.mjs'
-          - pr: 109
-            sha: '26168ec532817735fdc293594d2825827b1ac9b4'
-            tests: 'tests/mutex-async-lease-v1.test.mjs'
           - pr: 326
-            sha: '90b98925503579602e3704026f8740b49da6e1ae'
+            sha: '5377c9ac04990edd5d560b5b0b1a366a7b5eb0dc'
             tests: 'tests/layout-storage-oracle-aosoa-abi.test.mjs tests/layout-storage-oracle.test.mjs'
-          - pr: 301
-            sha: '997cbad5aaef6ca485667e0feec4a78ed7109ff0'
-            tests: 'tests/portable-task-runner-v1.test.mjs tests/portable-task-v1.test.mjs'
+          - pr: 391
+            sha: '6fbedd5df10d35f8ad0fa83217e376c3a07aa883'
+            tests: 'test/actor-stack-containment-v1.test.mjs'
+          - pr: 40
+            sha: 'd02e05bb6d85b14655a047b349a2a7fdfda26e73'
+            tests: 'tests/proxy-actor-api-parity-v1.test.mjs'
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -34,7 +28,7 @@ jobs:
         env:
           CANDIDATE: ${{ matrix.sha }}
           TEST_FILES: ${{ matrix.tests }}
-          BASE: 6f1ca1a75549af92db26e7f253328ec25f8d888a
+          BASE: 2c55d06e30d8e440a343842e5c61d21c571f4da4
         run: |
           set -euo pipefail
           git init source
@@ -53,5 +47,8 @@ jobs:
             *.py) python3 -m unittest discover -s tests -p test_aot_adt_guarded_guest.py ;;
             *) node --test $TEST_FILES ;;
           esac
+          if [ "$CANDIDATE" = d02e05bb6d85b14655a047b349a2a7fdfda26e73 ]; then
+            for f in tools/proxy_actor_ack_v1.rs tools/proxy_actor_ipc_two_process_v1.rs tools/typed_actor_reply_v1.rs tools/unary_reply_staging_v1.rs; do rustc --edition=2021 --test "$f" -o /tmp/proxy-tests && /tmp/proxy-tests || exit 1; done
+          fi
           node --test tests/actor-counter-parity.test.mjs tests/core-option-borrow-parity-v1.test.mjs tests/atto-canonical-syntax-v1.test.mjs tests/eleven-backend-parity-v1.test.mjs
           git diff --exit-code
