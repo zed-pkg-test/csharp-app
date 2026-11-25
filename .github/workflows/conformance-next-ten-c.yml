@@ -11,60 +11,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - pr: 397
-            sha: 'dba4e13a95dc06068a9215bfa67c48d00e669802'
-            command: 'node --test test/actor-stack-containment-v1.test.mjs'
-          - pr: 58
-            sha: '82197ab37cf3291ea3a43139d865eda1ed108109'
-            command: 'python3 -m unittest discover -s tests -p test_aot_adt_guarded_guest.py'
-          - pr: 550
-            sha: 'c1836678e97ddf3a70ec08578ec7004a7625ddc3'
-            command: 'node --test tests/atto-source-repository-parity-audit-v1.test.mjs tests/ci-recovery-evidence-20261121-v1.test.mjs tests/control-actor-memory-11-backend-audit-v1.test.mjs tests/control-ref32-bit-vectors-v1.test.mjs tests/exception-control-bang-source-audit-v1.test.mjs tests/git-replace-integrity-v1.test.mjs tests/std-protocol-11-backend-evidence-v1.test.mjs tests/std-udp-11-backend-evidence-v1.test.mjs'
-          - pr: 277
-            sha: 'f5f3406e65f2ad04cbacda12796dda7291fc258e'
-            command: 'node --test tests/critical-backend-ledger.test.mjs tests/critical-current-head-preflight.test.mjs tests/critical-runner-admission-ab.test.mjs tests/critical-runner-attempts.test.mjs tests/critical-runner-three-repo.test.mjs tests/critical-stage0-receipt.test.mjs tests/critical-stage1-native-fixtures.test.mjs tests/critical-suspension-v1.test.mjs'
-          - pr: 500
-            sha: '56610147c581ed987911a361639a00c4f3d3d047'
-            command: 'node --test tests/borrow-mir-v1-contract.test.mjs'
-          - pr: 446
-            sha: '800c592642f425fc55be7fb9f1e98eecd0b7b122'
-            command: 'node --test tests/option-result-trap-v4-integrity.test.mjs tests/option-result-trap-v4-source-contract.test.mjs tests/option-result-trap-receipt.test.mjs tests/option-result-trap-v3-integrity.test.mjs'
-          - pr: 454
-            sha: 'a5dbc4e322259a39907bb1040b549cd9f32a7581'
-            command: 'node --test tests/enum-semantics-v1-mutations.test.mjs tests/enum-semantics-v1.test.mjs tests/enum-semantics-v2-six-backend.test.mjs'
-          - pr: 332
-            sha: 'e7d839603c9873f03e0004a2bf0fa57434b1122b'
-            command: 'node --test tests/dop-four-layout-input-security.test.mjs test/dop-four-layout-state-replay.test.mjs test/dop-four-layout-reentrant-admission.test.mjs'
-          - pr: 233
-            sha: '35939f84725e72eb0defcf9190ee11b4ebaf0dd1'
-            command: 'node --test tests/cranelift-modern-linked-module-v1.test.mjs'
-          - pr: 235
-            sha: 'e3d426261bd5496a5acda87b9b233a3a64b5795a'
-            command: 'node --test tests/checked-i64-all-backends-v1.test.mjs'
           - pr: 110
-            sha: '4117ade5710ecd2436d823fe69c16421e96f7c4c'
+            sha: '3f8cae3cf388a1d42fc1aa5a0714990dfe23be26'
             command: 'node --test tests/unsafe-blocks-v1.test.mjs'
           - pr: 89
-            sha: '19ec708121ffe5f92b04f144840cf4991947dc72'
+            sha: 'ea2c478cb45df695ed4edd0f6d319b2e1986de26'
             command: 'node --test tests/implements-receiver-conformance-v1.test.mjs'
-          - pr: 279
-            sha: '964100c50ce6069597442266d2155b520764312c'
-            command: 'node --test tests/media-replay*.test.mjs'
-          - pr: 285
-            sha: 'da087baec252f6666ee65c09a9b12f2d6f3303ab'
-            command: 'node --test test/atto-parity-receipt.test.mjs'
+          - pr: 235
+            sha: 'fd38f017be05e056be08cbf90b99d5a340bded74'
+            command: 'node --test tests/checked-i64-all-backends-v1.test.mjs'
           - pr: 75
-            sha: '1e4deb78c47189ea51a0fb7650ad9fde81c9ac83'
+            sha: '574ec1b33ca071a2cc5e321a989d93934823fb0c'
             command: 'python3 bin/validate_shared_ownership_and_guards.py'
           - pr: 50
-            sha: '14d12c6ef029b4c6b45e3f5a895e2a17a90b1e01'
+            sha: '761c793c2090f0ed72e0f570854cc5258b3d7247'
             command: 'node --test tests/stdio-channel-endpoints.test.mjs && python3 -m unittest discover -s tests -p test_channel_return_ownership_contract.py'
-          - pr: 331
-            sha: 'd880fba488bbe3e4e839e990f12748942e85fe8c'
-            command: 'node --test test/atto-gpu-cuda-parity-map-v1.test.mjs test/gpu-*.test.mjs tests/gpu-g1-typed-frontend-corpus.test.mjs'
-          - pr: 406
-            sha: '7a500f83ef39c3a6d82cade55022000ba41ea7a1'
-            command: 'node --test test/platform-capability-contract-hardening.test.mjs test/platform-capability-receipt-adversarial.test.mjs tests/aot-backend-lane-identity-v2.test.mjs tests/aot-execution-evidence-v2.test.mjs tests/aot-stage-evidence-negative-matrix.test.mjs tests/aot-stage-execution-boundaries-v2.test.mjs'
+          - pr: 279
+            sha: 'd7802f2ad85f9bcbd0665e2532c8c59a43549616'
+            command: 'node --test tests/media-replay*.test.mjs'
+          - pr: 58
+            sha: '9b1a0c59d884eadc862de2ef8cb7c6ced388e539'
+            command: 'python3 -m unittest discover -s tests -p test_aot_adt_guarded_guest.py'
+          - pr: 233
+            sha: '0a5fc12dfe92038f91d96cd92c51fa4f36490bb5'
+            command: 'node --test tests/cranelift-modern-linked-module-v1.test.mjs'
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -72,7 +42,7 @@ jobs:
       - name: Test pinned public source integration
         env:
           CANDIDATE: ${{ matrix.sha }}
-          BASE: 7eef47b994bcf2a721ac84b43e40601c2b3891ce
+          BASE: 8b1c50b4fb38f383937f8b744e18cc4f552dfcf8
         run: |
           set -euo pipefail
           git init source
