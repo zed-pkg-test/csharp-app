@@ -11,30 +11,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - pr: 110
-            sha: '3f8cae3cf388a1d42fc1aa5a0714990dfe23be26'
-            command: 'node --test tests/unsafe-blocks-v1.test.mjs'
           - pr: 89
-            sha: 'ea2c478cb45df695ed4edd0f6d319b2e1986de26'
+            sha: 'e7b329ce5b1702a4bd50f9ac2aa7da1192996660'
             command: 'node --test tests/implements-receiver-conformance-v1.test.mjs'
           - pr: 235
-            sha: 'fd38f017be05e056be08cbf90b99d5a340bded74'
+            sha: '1b7fc2af6bde29d937a6809621dd3d3a625c836e'
             command: 'node --test tests/checked-i64-all-backends-v1.test.mjs'
           - pr: 75
-            sha: '574ec1b33ca071a2cc5e321a989d93934823fb0c'
+            sha: '43546e00db09dcc17675f552eb4f8b5bee752bca'
             command: 'python3 bin/validate_shared_ownership_and_guards.py'
           - pr: 50
-            sha: '761c793c2090f0ed72e0f570854cc5258b3d7247'
+            sha: '4c45aaa74f9ccea1022732202329d9cfcb5b6e01'
             command: 'node --test tests/stdio-channel-endpoints.test.mjs && python3 -m unittest discover -s tests -p test_channel_return_ownership_contract.py'
           - pr: 279
-            sha: 'd7802f2ad85f9bcbd0665e2532c8c59a43549616'
+            sha: '687b06c3f89899b9f45f226684e931ba875dbacc'
             command: 'node --test tests/media-replay*.test.mjs'
-          - pr: 58
-            sha: '9b1a0c59d884eadc862de2ef8cb7c6ced388e539'
-            command: 'python3 -m unittest discover -s tests -p test_aot_adt_guarded_guest.py'
-          - pr: 233
-            sha: '0a5fc12dfe92038f91d96cd92c51fa4f36490bb5'
-            command: 'node --test tests/cranelift-modern-linked-module-v1.test.mjs'
+          - pr: 285
+            sha: '7f60d6d97ce9ae367d1299bda5109d5f2a879ec4'
+            command: 'node --test test/atto-parity-receipt.test.mjs tests/implements-receiver-conformance-v1.test.mjs tests/checked-i64-all-backends-v1.test.mjs tests/stdio-channel-endpoints.test.mjs tests/media-replay*.test.mjs tests/unsafe-blocks-v1.test.mjs tests/cranelift-modern-linked-module-v1.test.mjs test/actor-stack-containment-v1.test.mjs && python3 bin/validate_shared_ownership_and_guards.py && python3 -m unittest discover -s tests -p test_channel_return_ownership_contract.py && python3 -m unittest discover -s tests -p test_aot_adt_guarded_guest.py'
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -42,7 +36,7 @@ jobs:
       - name: Test pinned public source integration
         env:
           CANDIDATE: ${{ matrix.sha }}
-          BASE: 8b1c50b4fb38f383937f8b744e18cc4f552dfcf8
+          BASE: 492ee193e1000173f44314a3a297ed7181c25e07
         run: |
           set -euo pipefail
           git init source
