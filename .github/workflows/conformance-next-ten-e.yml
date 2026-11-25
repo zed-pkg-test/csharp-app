@@ -11,46 +11,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - pr: 332
+            repo: 'atto-lang/atto-platform-conformance'
+            base: 'a5471334596261854d29543aaef69964cea160d6'
+            sha: '5efd9ff3d3390d72b9d144d1587e80aed76e7b55'
+            command: 'node --test tests/dop-four-layout-input-security.test.mjs test/dop-four-layout*.test.mjs test/heterogeneous-four-layout*.test.mjs tests/layout-storage-oracle*.test.mjs'
           - pr: 263
             repo: 'atto-lang/atto-platform-conformance'
-            base: '77a37abc7468bd746974300731361de9e8a3555d'
+            base: 'a5471334596261854d29543aaef69964cea160d6'
             sha: 'db9f51375fc40ff714a6ed4a8f5d140988298734'
-            command: 'cargo test --manifest-path verification/formal-proof-replay/Cargo.toml --locked --all-targets'
-          - pr: 287
-            repo: 'atto-lang/atto-platform-conformance'
-            base: '77a37abc7468bd746974300731361de9e8a3555d'
-            sha: '5f5127af99e56624ccbba0b02049b4cf4ce88f26'
-            command: 'node --test test/atto-parity-receipt.test.mjs'
-          - pr: 55
-            repo: 'atto-lang/atto-compilers-parity-testing'
-            base: '0be672f90829e48bec55ba9e90b920e437f0d86b'
-            sha: '6cfcb73a951e610accda69aefa1ccc7e894015f3'
-            command: 'node --test tools/std-env-v1/verify-receipts.test.mjs'
-          - pr: 50
-            repo: 'atto-lang/atto-compilers-parity-testing'
-            base: '0be672f90829e48bec55ba9e90b920e437f0d86b'
-            sha: '9b924af70e2314c4e8406a69234a1b7d51f398d3'
-            command: 'cargo test --locked --manifest-path tools/parity-runner/Cargo.toml --test effects_lifetimes'
+            command: 'cargo test --manifest-path verification/formal-proof-replay/Cargo.toml --locked --all-targets && cargo build --manifest-path verification/formal-proof-replay/Cargo.toml --locked'
           - pr: 46
             repo: 'atto-lang/atto-compilers-parity-testing'
-            base: '0be672f90829e48bec55ba9e90b920e437f0d86b'
-            sha: '582015e58c89dd08332de54004914ae4e4cde9e2'
+            base: 'bd2e69912cea903de21f3a5e53e0b32d653bef25'
+            sha: '72ae9dffc6c6801528bb7a694d57effd5b69bde1'
             command: 'node --test tests/corpus-report-admission.test.mjs && cargo run --quiet --locked --manifest-path tools/parity-runner/Cargo.toml -- --output parity-results.json && node tools/corpus-report-admission.mjs parity-results.json'
-          - pr: 23
+          - pr: 51
             repo: 'atto-lang/atto-compilers-parity-testing'
-            base: '0be672f90829e48bec55ba9e90b920e437f0d86b'
-            sha: 'ac9941611fc3271ad1bbefab6b05b7d6c0297228'
-            command: 'node --test tests/atto-backend-inventory.test.mjs tests/stdio-conformance-runner.test.mjs && cargo test --locked --test stdio_adt_parity'
-          - pr: 19
-            repo: 'atto-lang/atto-compilers-parity-testing'
-            base: '0be672f90829e48bec55ba9e90b920e437f0d86b'
-            sha: '85de834460b1817d088688e6ba8fefb214bc1b8c'
-            command: 'cargo test --locked --test async_http_fs_parity --test core_borrow_checking_parity --test hosted_io_pure_policy_vectors --test http_namespace_import_parity'
-          - pr: 43
-            repo: 'atto-lang/atto-compilers-parity-testing'
-            base: '42c96f235035ed7fbd414de0ee90993d20891c6a'
-            sha: 'fff4cd88056eee2e9dc40dcb317f1ab9345dd17a'
-            command: 'cargo test --locked --manifest-path tools/parity-runner/Cargo.toml --test annotated_injected_state_candidate'
+            base: 'bd2e69912cea903de21f3a5e53e0b32d653bef25'
+            sha: '8ca7ef8bfafeb37a5519e3ea711988f12e47d2b5'
+            command: 'node --test tests/generator-lifecycle-v1.test.mjs'
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -74,4 +54,25 @@ jobs:
           echo "INTEGRATION_TREE=$(git write-tree)"
           git diff --cached --stat
           ${{ matrix.command }}
+          if [ "${{ matrix.pr }}" = "263" ]; then
+            if ! command -v z3 >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y z3; fi
+            z3 --version
+            replay="$(pwd)/verification/formal-proof-replay/target/debug/formal-proof-replay"
+            test -x "$replay"
+            scratch="$(mktemp -d)"
+            mkdir -p "$scratch/source" "$scratch/queries"
+            git -C "$scratch/source" init -q
+            printf 'minimum(a,b) = if a <= b then a else b\n' > "$scratch/source/min.txt"
+            git -C "$scratch/source" add min.txt
+            git -C "$scratch/source" -c user.email=ci@example.invalid -c user.name=CI commit -qm smoke
+            printf '(declare-const a Int)\n(declare-const b Int)\n(assert (> (ite (<= a b) a b) a))\n(check-sat)\n' > "$scratch/queries/proof.smt2"
+            printf '(declare-const a Int)\n(declare-const b Int)\n(assert (> (ite (<= a b) b a) a))\n(check-sat)\n' > "$scratch/queries/mutant.smt2"
+            solver="$(readlink -f "$(command -v z3)")"
+            proof="$(sha256sum "$scratch/queries/proof.smt2" | cut -d' ' -f1)"
+            mutant="$(sha256sum "$scratch/queries/mutant.smt2" | cut -d' ' -f1)"
+            args=(--repository "$scratch/source" --commit "$(git -C "$scratch/source" rev-parse HEAD)" --source min.txt --source-blob "$(git -C "$scratch/source" hash-object min.txt)" --query-root "$scratch/queries" --solver "$solver" --solver-sha256 "$(sha256sum "$solver" | cut -d' ' -f1)")
+            "$replay" "${args[@]}" --proof "min-proof:proof.smt2:$proof" --mutant "min-mutant:mutant.smt2:$mutant"
+            if "$replay" "${args[@]}" --proof "min-proof:proof.smt2:$proof" --mutant "min-mutant:proof.smt2:$proof"; then exit 1; fi
+            rm -rf "$scratch"
+          fi
           git diff --exit-code
