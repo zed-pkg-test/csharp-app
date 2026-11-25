@@ -1,7 +1,7 @@
 name: Next conformance batch pinned integration
 on:
   push:
-    branches: ['ci/conformance-direct-replacements-20261125-1744']
+    branches: ['ci/conformance-next-20261125-1752']
 permissions: {}
 jobs:
   verify:
@@ -12,33 +12,45 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - pr: 113
-            head: '3c59c6106fb12b8160f2e65f39ccdd101de359c6'
-            test: "node --test tests/actor-attached-state-v1.test.mjs"
-          - pr: 109
-            head: '0d6772129d53293316c091423548d8f373c64a40'
-            test: "node --test tests/mutex-async-lease-v1.test.mjs"
+          - pr: 103
+            head: 'e6fe554a9a261dd114f05759902c5f5983917668'
+            test: "node --test tests/seq-expression-v1.test.mjs"
+          - pr: 97
+            head: 'c8b93b8ac21759a659b210258f4becaaabb93afd'
+            test: "node --test tests/specification-formatter-conformance-v1.test.mjs"
+          - pr: 89
+            head: '19ec708121ffe5f92b04f144840cf4991947dc72'
+            test: "node --test tests/implements-receiver-conformance-v1.test.mjs"
+          - pr: 74
+            head: '9e50ab8b4d46cf2074c92e3304e43fe5633468f1'
+            test: "python3 tests/implicit_argument_borrow_validator_smoke.py"
+          - pr: 71
+            head: '18ddfda673287cfa02a6aaec5405c8dd81bc9f88'
+            test: "node --test tests/collection-layout-v1.test.mjs"
+          - pr: 58
+            head: '82197ab37cf3291ea3a43139d865eda1ed108109'
+            test: "python3 -m unittest discover -s tests -p test_aot_adt_guarded_guest.py -v"
+          - pr: 62
+            head: '32fc7e27cb57e136bf48c3bc8b726e2c8a41fdde'
+            test: "node --test tests/actor-persistence-wire.test.mjs && python3 -m unittest discover -s tests -p test_actor_persistence_contract.py -v"
+          - pr: 57
+            head: '11fe7d4e122e7af4cce147400a959119011aa111'
+            test: "python3 -m unittest discover -s tests -p test_value_classes_contract.py -v"
+          - pr: 500
+            head: '56610147c581ed987911a361639a00c4f3d3d047'
+            test: "node --test tests/borrow-mir-v1-contract.test.mjs"
+          - pr: 565
+            head: '5fffbf14622be55c2e3307ccddda13243d78cdbf'
+            test: "node --test tests/task-backend-parity-rollout-v1.test.mjs tests/task-compiler-parity-admission-v1.test.mjs tests/task-payload-sync-v1.test.mjs"
+          - pr: 274
+            head: 'f4e040f0686985662c3965fddb58e0c85e7c1711'
+            test: "node --test tests/actor-ownership-*-v1.test.mjs"
           - pr: 110
             head: '4117ade5710ecd2436d823fe69c16421e96f7c4c'
             test: "node --test tests/unsafe-blocks-v1.test.mjs"
           - pr: 108
             head: '497bbb53697aed391ac31aa11abba976571f83d3'
             test: "node --test tests/canonical-of-record-generics-v1.test.mjs"
-          - pr: 106
-            head: 'bc5ece2a1018c92646890318d5cd02e74e4b0be0'
-            test: "rustc --edition=2021 --test tests/host-permissions-v1.rs -o /tmp/atto-host-permissions-v1 && /tmp/atto-host-permissions-v1"
-          - pr: 119
-            head: '23bf5895735a23cac2d0960fcf6ae3ec02d86bb9'
-            test: "node --test tests/structural-member-witness-v1.test.mjs"
-          - pr: 233
-            head: '35939f84725e72eb0defcf9190ee11b4ebaf0dd1'
-            test: "node --test tests/cranelift-modern-linked-module-v1.test.mjs"
-          - pr: 267
-            head: '8c3bdfd7990e4ff5bb800e87470da2fa68cefc90'
-            test: "node --test tests/actor-isolation-evidence-v1.test.mjs"
-          - pr: 268
-            head: '9f2f882a5383fb77645d74a287cc96413c56f939'
-            test: "node --test reference/silo/directory.test.mjs reference/persistence-sidecar/*.test.mjs"
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -53,8 +65,8 @@ jobs:
           cd source
           git config user.name 'CI integration'
           git config user.email 'ci@example.invalid'
-          git -c credential.helper= -c http.extraheader= fetch --no-tags https://github.com/atto-lang/atto-platform-conformance.git 44d517fc2ed22e82febb6bf729597c163ee5f98b "$HEAD_SHA"
-          git checkout --detach 44d517fc2ed22e82febb6bf729597c163ee5f98b
+          git -c credential.helper= -c http.extraheader= fetch --no-tags https://github.com/atto-lang/atto-platform-conformance.git 3863bfb81639ac859a8f022cb25956457cc29e8e "$HEAD_SHA"
+          git checkout --detach 3863bfb81639ac859a8f022cb25956457cc29e8e
           git merge --no-ff --no-edit "$HEAD_SHA"
           echo "TESTED TREE $(git rev-parse 'HEAD^{tree}') PARENTS $(git log -1 --format=%P)"
           bash -euo pipefail -c "$TEST_COMMAND"
