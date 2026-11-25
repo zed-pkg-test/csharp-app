@@ -1,0 +1,80 @@
+name: Eleventh batch pinned public integrations
+on:
+  push:
+    branches: ['ci/conformance-eleventh-recovery-20261125']
+permissions: {}
+jobs:
+  verify:
+    name: PR ${{ matrix.pr }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pr: 443
+            head: '456096412da86b0e495ace36db1e8be701f5a5c6'
+            test: "node --test tests/safe-collection-contract-v1.test.mjs tests/safe-collection-source-repo-matrix-v1.test.mjs tests/safe-collection-access-v1.test.mjs"
+          - pr: 354
+            head: 'c47207613a17dd001bc826c0a9b23e5cf80fde08'
+            test: "node --test tests/annotation-compiler-corpus-v2.test.mjs tests/annotation-targets-v2.test.mjs"
+          - pr: 352
+            head: '4437a78d7216cfda50cb369b2903044c9270f3b1'
+            test: "node --test test/dop-four-layout-state-replay.test.mjs"
+          - pr: 351
+            head: '6c16a49a5195bf843666bf635017f04fd64e99db'
+            test: "node --test test/dop-layout-physical-certifier-v1.test.mjs"
+          - pr: 406
+            head: '076e4ea52accc29b0573e07b1620ea3404629e73'
+            test: "node --test tests/aot-stage-evidence-negative-matrix.test.mjs"
+          - pr: 343
+            head: '6da54f06c5da37297856af7c4805710221f3f97d'
+            test: "node --test tests/mcp-m0-*.test.mjs"
+          - pr: 306
+            head: '3f43f3ff73c482deff0a712b3257addd5d724749'
+            test: "node --test tests/mcp-m0-differential-fuzz-20261106.test.mjs tests/mcp-m0-frame-guard.test.mjs tests/mcp-m0-numeric-exactness-20261106.test.mjs tests/mcp-m0-options-fail-closed-20261106.test.mjs"
+          - pr: 308
+            head: 'e8e6ebbff93239ab69cd688c15b513eaaea22e23'
+            test: "node --test tests/mcp-m0-admission-ledger.test.mjs tests/mcp-m0-audit-hmac-vectors-20261106.test.mjs tests/mcp-m0-proxy-admission-20261106.test.mjs tests/mcp-m0-untrusted-input-20261106.test.mjs"
+          - pr: 315
+            head: 'ea80edb5e0f90ca136246d40e970664cb906f0ef'
+            test: "node --test tests/untrusted-jit-evidence-v1.test.mjs"
+          - pr: 30
+            head: 'f22742bc457639f536cfc469b20705cc1716c0c9'
+            test: "node --test tests/pointer_local_candidates_v1.test.mjs tests/pointer_ref_local_v1.test.mjs tests/pointer_source_traits_operators_v1.test.mjs && rustc --edition=2021 --test tests/pointer_local_lease_oracle_v1.rs -o /tmp/pointer-tests && /tmp/pointer-tests"
+          - pr: 22
+            head: '81c5a9c7ed88d5e5f2f72119af83c86b1ad90609'
+            test: "python3 -m unittest discover -s tests -p 'test_net_http*_source.py'"
+          - pr: 33
+            head: '3549460c343d7f96f220462ccfb09e81cd2902ed'
+            test: "for f in tools/typed_actor_fixture_identity.rs tools/typed_actor_backend_inventory.rs tools/typed_actor_v1.rs tools/typed_actor_control_boundary_v1.rs tools/typed_actor_string_targets.rs tools/typed_actor_bool_v1.rs tools/actor_isolation_types_v1.rs tools/actor_isolation_broker_v1.rs; do rustc --edition=2021 --test $f -o /tmp/typed-tests && /tmp/typed-tests || exit 1; done"
+          - pr: 25
+            head: '07244ddd280de94853e2570507c85c3ecbdb50e0'
+            test: "rustc --edition=2021 -D warnings tools/actor_aot_guest_gate.rs -o /tmp/atto-actor-guest-gate && test -s fixtures/actor_heap_stack_aot_v1/two_actors.atto && test -s fixtures/actor_heap_stack_aot_v1/recursive_actor_call.atto && ! /tmp/atto-actor-guest-gate"
+          - pr: 300
+            head: '343b80d74bb7c4bf797161619d9c8383d9e7a906'
+            test: "node formal/fleet/check_coverage.cjs"
+          - pr: 454
+            head: 'a5dbc4e322259a39907bb1040b549cd9f32a7581'
+            test: "node --test tests/enum-semantics-v1-mutations.test.mjs tests/enum-semantics-v1.test.mjs tests/enum-semantics-v2-six-backend.test.mjs"
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Test pinned public integration
+        env:
+          HEAD_SHA: ${{ matrix.head }}
+          TEST_COMMAND: ${{ matrix.test }}
+        run: |
+          set -euo pipefail
+          git init source
+          cd source
+          git config user.name 'CI integration'
+          git config user.email 'ci@example.invalid'
+          git -c credential.helper= -c http.extraheader= fetch --no-tags https://github.com/atto-lang/atto-platform-conformance.git 3fc6325f07cae3612892c602f115e2f96bddd5ca "$HEAD_SHA"
+          git checkout --detach 3fc6325f07cae3612892c602f115e2f96bddd5ca
+          test "$(git rev-parse 'HEAD^{tree}')" = d01ddd2b90955f57ed0cc17b0aa46e4b18590733
+          git merge --no-ff --no-edit "$HEAD_SHA"
+          echo "TESTED TREE $(git rev-parse 'HEAD^{tree}') PARENTS $(git log -1 --format=%P)"
+          bash -euo pipefail -c "$TEST_COMMAND"
+          git diff --exit-code HEAD --
