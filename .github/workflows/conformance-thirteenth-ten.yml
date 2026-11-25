@@ -12,18 +12,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - pr: 'format-86'
-            head: '35e6471c9168b87ce39c287c2157088327442275'
-            test: 'cargo test'
-            repo: 'atto-lang/atto-format'
-            base: '0d3977827141c043bc2caff00a693cf5334c61af'
-            tree: 'e6c3c74a2f8d0e6e8b1ed421702e8891c1bcf673'
-          - pr: 'format-70'
-            head: '25432c7b8e02159a4abe9e4baff584eeb3c8bb3c'
-            test: 'cargo test'
-            repo: 'atto-lang/atto-format'
-            base: '0d3977827141c043bc2caff00a693cf5334c61af'
-            tree: 'e6c3c74a2f8d0e6e8b1ed421702e8891c1bcf673'
+          - pr: 97
+            head: '601795d5c9d091ba241f653ec2fde43403df68a9'
+            test: 'node --test tests/specification-formatter-conformance-v1.test.mjs'
+            repo: 'atto-lang/atto-platform-conformance'
+            base: '7b8a61e34301062436e47bcabd6a4c1a16279b04'
+            tree: '018599c1a439e86d3610258dc95c30fe67c03999'
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
