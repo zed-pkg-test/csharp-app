@@ -1,0 +1,77 @@
+name: Next conformance batch pinned integration
+on:
+  push:
+    branches: ['ci/conformance-direct-ten-20261125-1742']
+permissions: {}
+jobs:
+  verify:
+    name: PR ${{ matrix.pr }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pr: 334
+            head: '49ab01e964503c5ffa169e40a5a73e8387ff1af'
+            test: "node --test test/data-layout-descriptor-snapshot.test.mjs"
+          - pr: 333
+            head: '080674f6e87024e2b97570888f5cbb800ebcfbb1'
+            test: "node --test tests/atto-gpu-kernels-v1.test.mjs"
+          - pr: 332
+            head: 'e7d839603c9873f03e0004a2bf0fa57434b1122b'
+            test: "node --test tests/dop-four-layout-input-security.test.mjs"
+          - pr: 328
+            head: '7c598d7caf240e1d20ebeeef72ad1f97d907043e'
+            test: "node --test tests/inverted-packed-alignment-20261106.test.mjs tests/inverted-reentrancy-20261106.test.mjs tests/layout-oracle.test.mjs"
+          - pr: 326
+            head: 'fc408ae890a4fd59172b05a3ff528d42473f8d3b'
+            test: "node --test tests/layout-storage-oracle-aosoa-abi.test.mjs tests/layout-storage-oracle.test.mjs"
+          - pr: 312
+            head: '52cb131269ead5fcaec7003ac1052f9ac257b44c'
+            test: "node --test tests/application-formal-receipt-v1.test.mjs"
+          - pr: 301
+            head: 'f87f700f33a13ab16b5441117df6b0f743bcb0f9'
+            test: "node --test tests/portable-task-runner-v1.test.mjs tests/portable-task-v1.test.mjs"
+          - pr: 297
+            head: 'c31a04e1d6c3ee70b4df2486cc2ee375e047b887'
+            test: "node formal/check_actor_control.mjs && node --test formal/adversarial_contract.test.mjs"
+          - pr: 279
+            head: '964100c50ce6069597442266d2155b520764312c'
+            test: "node --test tests/media-replay-*.test.mjs"
+          - pr: 264
+            head: '65a3adf0d087159caa6d8c8bc457aa513a024750'
+            test: "node --test tests/async_interop_contract.test.mjs"
+          - pr: 240
+            head: '7d88f16213f4f2f4276df9df6b71f79955361bea'
+            test: "node --test tests/lambda_four_styles.test.mjs"
+          - pr: 235
+            head: 'e3d426261bd5496a5acda87b9b233a3a64b5795a'
+            test: "node --test tests/checked-i64-all-backends-v1.test.mjs"
+          - pr: 232
+            head: '79de7b22a5a473ca132e010e72249e825a395f98'
+            test: "node --test tests/option-type-suffix-native-v1.test.mjs"
+          - pr: 331
+            head: '147c7b11f6b734d6291f2a15b0e4505fab710c5e'
+            test: "node --test test/atto-gpu-cuda-parity-map-v1.test.mjs test/gpu-explicit-launch-v1.test.mjs test/gpu-g1d-integration-receipt-v1.test.mjs test/gpu-kernel-source-hir-v1.test.mjs test/gpu-kernel-source-link-v1.test.mjs test/gpu-kernel-source-v1.test.mjs test/gpu-typed-hir-forgery-v1.test.mjs test/gpu-typed-host-args-v1.test.mjs tests/gpu-g1-typed-frontend-corpus.test.mjs"
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Test pinned public integration
+        env:
+          HEAD_SHA: ${{ matrix.head }}
+          TEST_COMMAND: ${{ matrix.test }}
+        run: |
+          set -euo pipefail
+          git init source
+          cd source
+          git config user.name 'CI integration'
+          git config user.email 'ci@example.invalid'
+          git -c credential.helper= -c http.extraheader= fetch --no-tags https://github.com/atto-lang/atto-platform-conformance.git df09994b4aff8db0b2eb44d350644b590ed69a19 "$HEAD_SHA"
+          git checkout --detach df09994b4aff8db0b2eb44d350644b590ed69a19
+          git merge --no-ff --no-edit "$HEAD_SHA"
+          echo "TESTED TREE $(git rev-parse 'HEAD^{tree}') PARENTS $(git log -1 --format=%P)"
+          bash -euo pipefail -c "$TEST_COMMAND"
+          node --test tests/cooperative-execution.test.mjs tests/cooperative-execution-hardening.test.mjs tests/execution-context-unwind-v1.test.mjs tests/susp_effect_alias_registry.test.mjs
+          git diff --exit-code HEAD --
