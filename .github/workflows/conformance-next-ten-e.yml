@@ -1,0 +1,77 @@
+name: Conformance and parity exact integration E
+on:
+  push:
+    branches: ['ci/conformance-next-ten-20261125-e']
+permissions: {}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pr: 263
+            repo: 'atto-lang/atto-platform-conformance'
+            base: '77a37abc7468bd746974300731361de9e8a3555d'
+            sha: 'db9f51375fc40ff714a6ed4a8f5d140988298734'
+            command: 'cargo test --manifest-path verification/formal-proof-replay/Cargo.toml --locked --all-targets'
+          - pr: 287
+            repo: 'atto-lang/atto-platform-conformance'
+            base: '77a37abc7468bd746974300731361de9e8a3555d'
+            sha: '5f5127af99e56624ccbba0b02049b4cf4ce88f26'
+            command: 'node --test test/atto-parity-receipt.test.mjs'
+          - pr: 55
+            repo: 'atto-lang/atto-compilers-parity-testing'
+            base: '0be672f90829e48bec55ba9e90b920e437f0d86b'
+            sha: '6cfcb73a951e610accda69aefa1ccc7e894015f3'
+            command: 'node --test tools/std-env-v1/verify-receipts.test.mjs'
+          - pr: 50
+            repo: 'atto-lang/atto-compilers-parity-testing'
+            base: '0be672f90829e48bec55ba9e90b920e437f0d86b'
+            sha: '9b924af70e2314c4e8406a69234a1b7d51f398d3'
+            command: 'cargo test --locked --manifest-path tools/parity-runner/Cargo.toml --test effects_lifetimes'
+          - pr: 46
+            repo: 'atto-lang/atto-compilers-parity-testing'
+            base: '0be672f90829e48bec55ba9e90b920e437f0d86b'
+            sha: '582015e58c89dd08332de54004914ae4e4cde9e2'
+            command: 'node --test tests/corpus-report-admission.test.mjs && cargo run --quiet --locked --manifest-path tools/parity-runner/Cargo.toml -- --output parity-results.json && node tools/corpus-report-admission.mjs parity-results.json'
+          - pr: 23
+            repo: 'atto-lang/atto-compilers-parity-testing'
+            base: '0be672f90829e48bec55ba9e90b920e437f0d86b'
+            sha: 'ac9941611fc3271ad1bbefab6b05b7d6c0297228'
+            command: 'node --test tests/atto-backend-inventory.test.mjs tests/stdio-conformance-runner.test.mjs && cargo test --locked --test stdio_adt_parity'
+          - pr: 19
+            repo: 'atto-lang/atto-compilers-parity-testing'
+            base: '0be672f90829e48bec55ba9e90b920e437f0d86b'
+            sha: '85de834460b1817d088688e6ba8fefb214bc1b8c'
+            command: 'cargo test --locked --test async_http_fs_parity --test core_borrow_checking_parity --test hosted_io_pure_policy_vectors --test http_namespace_import_parity'
+          - pr: 43
+            repo: 'atto-lang/atto-compilers-parity-testing'
+            base: '42c96f235035ed7fbd414de0ee90993d20891c6a'
+            sha: 'fff4cd88056eee2e9dc40dcb317f1ab9345dd17a'
+            command: 'cargo test --locked --manifest-path tools/parity-runner/Cargo.toml --test annotated_injected_state_candidate'
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Verify pinned public integration and run focused tests
+        env:
+          BASE: ${{ matrix.base }}
+          CANDIDATE: ${{ matrix.sha }}
+          SOURCE_REPO: ${{ matrix.repo }}
+        run: |
+          set -euo pipefail
+          git init source
+          cd source
+          git config user.email 'ci@example.invalid'
+          git config user.name 'Integration verifier'
+          git -c credential.helper= -c http.extraheader= fetch --no-tags "https://github.com/$SOURCE_REPO.git" "$BASE" "$CANDIDATE"
+          git checkout --detach "$BASE"
+          test "$(git rev-parse HEAD)" = "$BASE"
+          test "$(git rev-parse "$CANDIDATE^{commit}")" = "$CANDIDATE"
+          git merge --no-commit --no-ff "$CANDIDATE"
+          echo "INTEGRATION_TREE=$(git write-tree)"
+          git diff --cached --stat
+          ${{ matrix.command }}
+          git diff --exit-code
