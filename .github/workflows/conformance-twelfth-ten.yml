@@ -1,0 +1,68 @@
+name: Twelfth batch pinned public integrations
+on:
+  push:
+    branches: ['ci/conformance-twelfth-ten-20261125']
+permissions: {}
+jobs:
+  verify:
+    name: PR ${{ matrix.pr }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pr: 300
+            head: '343b80d74bb7c4bf797161619d9c8383d9e7a906'
+            test: 'node formal/fleet/check_coverage.cjs'
+          - pr: 25
+            head: '07244ddd280de94853e2570507c85c3ecbdb50e0'
+            test: 'jq -e ''.schema == "atto.actor-heap-stack-aot.v1" and (.cases|length==6) and all(.cases[]; .current_backend_status=="NOT_EXECUTED")'' contracts/actor-heap-stack-aot-v1.json && jq -e ''.schema=="atto.compact-ref32-parity.v1" and .target_ref_bytes==4 and (.cases|length==11) and all(.cases[]; (.backend_status|length==5) and all(.backend_status[]; .=="NOT_EXECUTED"))'' contracts/compact-ref32-parity-v1.json && rustc --edition=2021 -D warnings tools/actor_aot_guest_gate.rs -o /tmp/actor-gate && ! /tmp/actor-gate'
+          - pr: 443
+            head: '198679473abc67c52386a36cc2b283ab6f32f439'
+            test: 'node --test tests/safe-collection-contract-v1.test.mjs tests/safe-collection-source-repo-matrix-v1.test.mjs tests/safe-collection-access-v1.test.mjs'
+          - pr: 490
+            head: 'b83e1f922746cb3128a126bf3988e989117baf3b'
+            test: 'node --test tests/value-pipe-tuples-v1-admission-hardening.test.mjs tests/value-pipe-tuples-v1.test.mjs'
+          - pr: 509
+            head: '10a9a86cb8efcc595c88380989421f2292fa0a8d'
+            test: 'node --input-type=module -e ''import fs from "node:fs"; import assert from "node:assert/strict"; for (const p of process.argv.slice(1)) { const c=JSON.parse(fs.readFileSync(p,"utf8")); assert.equal(c.status,"candidate-unattested"); assert.deepEqual(c.verifiedBackends,[]); assert.ok(c.cases.length>=10); assert.equal(new Set(c.cases.map(x=>x.id)).size,c.cases.length); for(const x of c.cases){assert.equal(x.evidence,"NOT_EXECUTED");assert.deepEqual(x.confirmedBackends,[]);assert.ok(x.requires.length>0);assert.ok(x.expect);assert.ok(x.stage);assert.deepEqual(x.backends,c.backendTargets)} console.log(p,c.cases.length,"candidate cases validated") }'' contracts/namespace-actor-receiver-v1.json'
+          - pr: 512
+            head: 'ffc929e05e5a2955dfc73622657a8d24bde4c6fc'
+            test: 'node --input-type=module -e ''import fs from "node:fs"; import assert from "node:assert/strict"; for (const p of process.argv.slice(1)) { const c=JSON.parse(fs.readFileSync(p,"utf8")); assert.equal(c.status,"candidate-unattested"); assert.deepEqual(c.verifiedBackends,[]); assert.ok(c.cases.length>=10); assert.equal(new Set(c.cases.map(x=>x.id)).size,c.cases.length); for(const x of c.cases){assert.equal(x.evidence,"NOT_EXECUTED");assert.deepEqual(x.confirmedBackends,[]);assert.ok(x.requires.length>0);assert.ok(x.expect);assert.ok(x.stage);assert.deepEqual(x.backends,c.backendTargets)} console.log(p,c.cases.length,"candidate cases validated") }'' contracts/namespace-actor-receiver-v1.json contracts/namespace-attached-actor-state-v1.json'
+          - pr: 517
+            head: 'e112d8acb7923c0aa42e9d3e526ca7f7d17d490a'
+            test: 'node --test tests/actor-counter-parity.test.mjs'
+          - pr: 364
+            head: 'c02f43053db7a5755b7a1cb331fe1c6e9b9681ac'
+            test: 'node --test test/dop-layout-physical-certifier-v1.test.mjs test/dop-layout-physical-certifier-snapshot.test.mjs'
+          - pr: 369
+            head: '71e91e516354c55e841c8028f18901533f08a63b'
+            test: 'node --test test/dop-layout-physical-certifier-v1.test.mjs test/dop-layout-physical-certifier-snapshot.test.mjs test/dop-layout-physical-metamorphic.test.mjs'
+          - pr: 378
+            head: 'fdefe3b9e39e201e2e27d22ccbe58ad2292fc37e'
+            test: 'node --test test/dop-layout-physical-certifier-v1.test.mjs test/dop-layout-physical-certifier-snapshot.test.mjs test/dop-layout-physical-metamorphic.test.mjs test/dop-layout-canonical-geometry.test.mjs'
+          - pr: 383
+            head: '44ba8b3dfdf56861cdb1e42a993a0186c81b64c7'
+            test: 'node --test test/dop-layout-physical-certifier-v1.test.mjs test/dop-layout-physical-certifier-snapshot.test.mjs test/dop-layout-physical-metamorphic.test.mjs test/dop-layout-canonical-geometry.test.mjs test/dop-i64-shared-source-envelope-v1.test.mjs'
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Test pinned public integration
+        env:
+          HEAD_SHA: ${{ matrix.head }}
+          TEST_COMMAND: ${{ matrix.test }}
+        run: |
+          set -euo pipefail
+          git init source
+          cd source
+          git config user.name 'CI integration'
+          git config user.email 'ci@example.invalid'
+          git -c credential.helper= -c http.extraheader= fetch --no-tags https://github.com/atto-lang/atto-platform-conformance.git 3eb66a6e18b98e45493a039501879326980dfb41 "$HEAD_SHA"
+          git checkout --detach 3eb66a6e18b98e45493a039501879326980dfb41
+          test "$(git rev-parse 'HEAD^{tree}')" = 7b73f5ce01d4a6f5af10c6799ae115ea851064ca
+          git merge --no-ff --no-edit "$HEAD_SHA"
+          echo "TESTED TREE $(git rev-parse 'HEAD^{tree}') PARENTS $(git log -1 --format=%P)"
+          bash -euo pipefail -c "$TEST_COMMAND"
+          git diff --exit-code HEAD --
