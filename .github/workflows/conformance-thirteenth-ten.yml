@@ -12,30 +12,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - pr: 541
-            head: '3e8f49c584086947e163888dccefa4c868466dec'
-            test: "node bin/validate-lambda-v1.mjs && node --test test/lambda-v1-manifest.test.mjs test/lambda-v1-python.test.mjs && python3 -m unittest discover -s tests -p test_run_lambda_v1.py"
-            repo: 'atto-lang/atto-platform-conformance'
-            base: '79e5c7cdd667df08f546ca47a0d609ba71694c71'
-            tree: '8165a230228a3b705d5f31af08d31a65b39ad686'
-          - pr: 484
-            head: '2153f02ee95a33c92cf61fcf3f8c13cf25f0a61b'
-            test: "node --test test/erl-otp-static-reference.test.mjs test/erl-otp-strict-aot-contract.test.mjs test/erl-otp-strict-aot-receipt.test.mjs"
-            repo: 'atto-lang/atto-platform-conformance'
-            base: '79e5c7cdd667df08f546ca47a0d609ba71694c71'
-            tree: '8165a230228a3b705d5f31af08d31a65b39ad686'
-          - pr: 490
-            head: '8976798f11568ce3892609bb09ebfdbb87b57dc1'
-            test: "node --test tests/value-pipe-tuples-v1-admission-hardening.test.mjs tests/value-pipe-tuples-v1.test.mjs"
-            repo: 'atto-lang/atto-platform-conformance'
-            base: '79e5c7cdd667df08f546ca47a0d609ba71694c71'
-            tree: '8165a230228a3b705d5f31af08d31a65b39ad686'
-          - pr: 'spec-207'
-            head: 'fe0f6c2eec97e95e1b2c42d69f5e14ae00b0c7f9'
-            test: 'node --test tests/deterministic-actor-model.test.mjs'
-            repo: 'atto-lang/atto-spec'
-            base: '1ef8a3f09a3649c8a9768c3be72b3be58fbc7e99'
-            tree: 'fc6571143e369fc911ea027a196349080608db9f'
+          - pr: 'format-86'
+            head: '35e6471c9168b87ce39c287c2157088327442275'
+            test: 'cargo test --locked'
+            repo: 'atto-lang/atto-format'
+            base: '0d3977827141c043bc2caff00a693cf5334c61af'
+            tree: 'e6c3c74a2f8d0e6e8b1ed421702e8891c1bcf673'
+          - pr: 'format-70'
+            head: '25432c7b8e02159a4abe9e4baff584eeb3c8bb3c'
+            test: 'cargo test --locked'
+            repo: 'atto-lang/atto-format'
+            base: '0d3977827141c043bc2caff00a693cf5334c61af'
+            tree: 'e6c3c74a2f8d0e6e8b1ed421702e8891c1bcf673'
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
