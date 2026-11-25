@@ -11,15 +11,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - pr: 326
-            sha: '5377c9ac04990edd5d560b5b0b1a366a7b5eb0dc'
-            tests: 'tests/layout-storage-oracle-aosoa-abi.test.mjs tests/layout-storage-oracle.test.mjs'
-          - pr: 391
-            sha: '6fbedd5df10d35f8ad0fa83217e376c3a07aa883'
+          - pr: 395
+            sha: 'b274fb6b4bee8cd42a7e62fe66ba88d112f79417'
             tests: 'test/actor-stack-containment-v1.test.mjs'
-          - pr: 40
-            sha: 'd02e05bb6d85b14655a047b349a2a7fdfda26e73'
-            tests: 'tests/proxy-actor-api-parity-v1.test.mjs'
+          - pr: 397
+            sha: '28e76a8910a43cd226acfd8adf754aacfaf0710f'
+            tests: 'test/actor-stack-containment-v1.test.mjs'
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -28,7 +25,7 @@ jobs:
         env:
           CANDIDATE: ${{ matrix.sha }}
           TEST_FILES: ${{ matrix.tests }}
-          BASE: 2c55d06e30d8e440a343842e5c61d21c571f4da4
+          BASE: 629e52f60cab36fe121f5858a1424c6cc02b8762
         run: |
           set -euo pipefail
           git init source
@@ -47,8 +44,6 @@ jobs:
             *.py) python3 -m unittest discover -s tests -p test_aot_adt_guarded_guest.py ;;
             *) node --test $TEST_FILES ;;
           esac
-          if [ "$CANDIDATE" = d02e05bb6d85b14655a047b349a2a7fdfda26e73 ]; then
-            for f in tools/proxy_actor_ack_v1.rs tools/proxy_actor_ipc_two_process_v1.rs tools/typed_actor_reply_v1.rs tools/unary_reply_staging_v1.rs; do rustc --edition=2021 --test "$f" -o /tmp/proxy-tests && /tmp/proxy-tests || exit 1; done
-          fi
           node --test tests/actor-counter-parity.test.mjs tests/core-option-borrow-parity-v1.test.mjs tests/atto-canonical-syntax-v1.test.mjs tests/eleven-backend-parity-v1.test.mjs
+          node --test tests/layout-storage-oracle-aosoa-abi.test.mjs tests/layout-storage-oracle.test.mjs tests/mutex-async-lease-v1.test.mjs tests/portable-task-runner-v1.test.mjs tests/portable-task-v1.test.mjs tests/byte-buffer-v1.test.mjs tests/core-alloc-std-v1.test.mjs tests/typed-arm-task-capture-v1.test.mjs tests/adt-lazy-guard-v2.test.mjs test/five-backend-actor-channel-v1.test.mjs tests/atto-java-llvm-guest-gate.test.mjs tests/proxy-actor-api-parity-v1.test.mjs
           git diff --exit-code
