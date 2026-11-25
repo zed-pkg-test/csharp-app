@@ -12,35 +12,20 @@ jobs:
       matrix:
         include:
           - pr: 52
-            sha: 'b88c15ca2ae7d3656ea6e9ef5f73a1f802da1b6a'
+            sha: '85c6f1ef85a4b17533612dd4acc9405b205c8056'
             tests: 'tests/adt-lazy-guard-v2.test.mjs tests/adt-when-guard-v1.test.mjs tests/typed-arm-task-capture-v1.test.mjs'
-          - pr: 58
-            sha: '82197ab37cf3291ea3a43139d865eda1ed108109'
-            tests: 'tests/test_aot_adt_guarded_guest.py'
           - pr: 104
-            sha: 'd6be1aae1ca5076342c48ce35766c252a3eb6650'
+            sha: '7389741b0e9c3b39fc0e4fa5024a43d528b0aa31'
             tests: 'tests/byte-buffer-v1-experimental-wasm.test.mjs tests/byte-buffer-v1-host-evidence.test.mjs tests/byte-buffer-v1.test.mjs tests/core-alloc-std-v1.test.mjs'
           - pr: 109
-            sha: '0d6772129d53293316c091423548d8f373c64a40'
+            sha: '26168ec532817735fdc293594d2825827b1ac9b4'
             tests: 'tests/mutex-async-lease-v1.test.mjs'
           - pr: 326
-            sha: 'fc408ae890a4fd59172b05a3ff528d42473f8d3b'
+            sha: '90b98925503579602e3704026f8740b49da6e1ae'
             tests: 'tests/layout-storage-oracle-aosoa-abi.test.mjs tests/layout-storage-oracle.test.mjs'
-          - pr: 550
-            sha: 'c1836678e97ddf3a70ec08578ec7004a7625ddc3'
-            tests: 'tests/atto-source-repository-parity-audit-v1.test.mjs tests/ci-recovery-evidence-20261121-v1.test.mjs tests/control-actor-memory-11-backend-audit-v1.test.mjs tests/control-ref32-bit-vectors-v1.test.mjs tests/exception-control-bang-source-audit-v1.test.mjs tests/git-replace-integrity-v1.test.mjs tests/std-protocol-11-backend-evidence-v1.test.mjs tests/std-udp-11-backend-evidence-v1.test.mjs'
           - pr: 301
-            sha: 'f87f700f33a13ab16b5441117df6b0f743bcb0f9'
+            sha: '997cbad5aaef6ca485667e0feec4a78ed7109ff0'
             tests: 'tests/portable-task-runner-v1.test.mjs tests/portable-task-v1.test.mjs'
-          - pr: 277
-            sha: 'f5f3406e65f2ad04cbacda12796dda7291fc258e'
-            tests: 'tests/critical-backend-ledger.test.mjs tests/critical-current-head-preflight.test.mjs tests/critical-runner-admission-ab.test.mjs tests/critical-runner-attempts.test.mjs tests/critical-runner-three-repo.test.mjs tests/critical-stage0-receipt.test.mjs tests/critical-stage1-native-fixtures.test.mjs tests/critical-suspension-v1.test.mjs'
-          - pr: 295
-            sha: '4a8ff13bceb19d9c970f3236bf890215aaa5a57c'
-            tests: 'test/five-backend-actor-channel-v1.test.mjs'
-          - pr: 286
-            sha: '945230b6d335b926273df61bc4624268716d36b1'
-            tests: 'tests/atto-java-llvm-guest-gate.test.mjs'
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -49,7 +34,7 @@ jobs:
         env:
           CANDIDATE: ${{ matrix.sha }}
           TEST_FILES: ${{ matrix.tests }}
-          BASE: bd170b9730a337e0c6ba338e5955f2203278d1f4
+          BASE: 6f1ca1a75549af92db26e7f253328ec25f8d888a
         run: |
           set -euo pipefail
           git init source
