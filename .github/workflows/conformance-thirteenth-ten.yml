@@ -12,21 +12,39 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - pr: 74
-            head: 'de7e252cd344b3fbeead8d00fe14ab7d140c684d'
-            test: "python3 bin/validate_implicit_argument_borrow.py && python3 -O tests/implicit_argument_borrow_validator_smoke.py"
           - pr: 541
-            head: '63234d01540cbba3363502df8d6f8912c2c481f7'
+            head: '3e8f49c584086947e163888dccefa4c868466dec'
             test: "node bin/validate-lambda-v1.mjs && node --test test/lambda-v1-manifest.test.mjs test/lambda-v1-python.test.mjs && python3 -m unittest discover -s tests -p test_run_lambda_v1.py"
+            repo: 'atto-lang/atto-platform-conformance'
+            base: '79e5c7cdd667df08f546ca47a0d609ba71694c71'
+            tree: '8165a230228a3b705d5f31af08d31a65b39ad686'
           - pr: 484
-            head: '0e4ab4eac6527b7d9daf61bcafce0bc7d87acf7e'
+            head: '2153f02ee95a33c92cf61fcf3f8c13cf25f0a61b'
             test: "node --test test/erl-otp-static-reference.test.mjs test/erl-otp-strict-aot-contract.test.mjs test/erl-otp-strict-aot-receipt.test.mjs"
+            repo: 'atto-lang/atto-platform-conformance'
+            base: '79e5c7cdd667df08f546ca47a0d609ba71694c71'
+            tree: '8165a230228a3b705d5f31af08d31a65b39ad686'
+          - pr: 490
+            head: '8976798f11568ce3892609bb09ebfdbb87b57dc1'
+            test: "node --test tests/value-pipe-tuples-v1-admission-hardening.test.mjs tests/value-pipe-tuples-v1.test.mjs"
+            repo: 'atto-lang/atto-platform-conformance'
+            base: '79e5c7cdd667df08f546ca47a0d609ba71694c71'
+            tree: '8165a230228a3b705d5f31af08d31a65b39ad686'
+          - pr: 'spec-207'
+            head: 'fe0f6c2eec97e95e1b2c42d69f5e14ae00b0c7f9'
+            test: 'node --test tests/deterministic-actor-model.test.mjs'
+            repo: 'atto-lang/atto-spec'
+            base: '1ef8a3f09a3649c8a9768c3be72b3be58fbc7e99'
+            tree: 'fc6571143e369fc911ea027a196349080608db9f'
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
       - name: Test pinned public integration
         env:
+          SOURCE_REPO: ${{ matrix.repo }}
+          BASE_SHA: ${{ matrix.base }}
+          BASE_TREE: ${{ matrix.tree }}
           HEAD_SHA: ${{ matrix.head }}
           TEST_COMMAND: ${{ matrix.test }}
         run: |
@@ -35,9 +53,9 @@ jobs:
           cd source
           git config user.name 'CI integration'
           git config user.email 'ci@example.invalid'
-          git -c credential.helper= -c http.extraheader= fetch --no-tags https://github.com/atto-lang/atto-platform-conformance.git a4e6109ea068849e028834a990e605c381e811f5 "$HEAD_SHA"
-          git checkout --detach a4e6109ea068849e028834a990e605c381e811f5
-          test "$(git rev-parse 'HEAD^{tree}')" = dd9da5bd4ea8c25dc1f3385828ed309909463e50
+          git -c credential.helper= -c http.extraheader= fetch --no-tags https://github.com/$SOURCE_REPO.git "$BASE_SHA" "$HEAD_SHA"
+          git checkout --detach "$BASE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$BASE_TREE"
           git merge --no-ff --no-edit "$HEAD_SHA"
           echo "TESTED TREE $(git rev-parse 'HEAD^{tree}') PARENTS $(git log -1 --format=%P)"
           bash -euo pipefail -c "$TEST_COMMAND"
