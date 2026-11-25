@@ -11,46 +11,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - pr: 72
-            sha: '0587b6c7fc48cdbd3eb9dc2be1d6197846b7df2d'
-            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
-            command: 'node --test tests/bitwise-operators-v1.test.mjs'
-          - pr: 483
-            sha: '346bd10c4e1ec5887cee548c394e454d5651dbe1'
-            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
-            command: 'node --test tests/declaration-scope-v1.test.mjs'
-          - pr: 500
-            sha: 'a47e20a0ee796541eae2bc65fadaa5e4a04026c0'
-            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
-            command: 'node --test tests/borrow-mir-v1-contract.test.mjs'
-          - pr: 333
-            sha: '080674f6e87024e2b97570888f5cbb800ebcfbb1'
-            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
-            command: 'node --test tests/atto-gpu-kernels-v1.test.mjs'
           - pr: 274
-            sha: 'f4e040f0686985662c3965fddb58e0c85e7c1711'
-            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
+            sha: '3dda6e3908ba48168dd8720e66b57e7ecb08e74e'
+            base: '6851b7c41b839d96cdb7d920309127405f2d49cd'
             command: 'node --test tests/actor-ownership-*-v1.test.mjs'
+          - pr: 333
+            sha: '801ca1da2c96b418dff7f57011616de3c9347331'
+            base: '6851b7c41b839d96cdb7d920309127405f2d49cd'
+            command: 'node --test tests/atto-gpu-kernels-v1.test.mjs'
           - pr: 253
-            sha: '8f07fb826d6ca02fc1b9ad62a9cfe0afda0206f5'
-            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
+            sha: '51555111160bfa618bf5457231fa3c46092fb7ba'
+            base: '6851b7c41b839d96cdb7d920309127405f2d49cd'
             command: 'node --test parity/integration/tests/*.test.mjs'
-          - pr: 277
-            sha: '493a87f256197af4786e76125158268cf39540aa'
-            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
-            command: 'node --test tests/critical-*.test.mjs'
-          - pr: 331
-            sha: 'f17a27d4892633f0b4af192d2e1d13a8cd4d3082'
-            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
-            command: 'node --test test/atto-gpu-cuda-parity-map-v1.test.mjs test/gpu-*.test.mjs tests/gpu-g1-typed-frontend-corpus.test.mjs'
           - pr: 550
-            sha: '4b4ba11fb18ebc1fb0c325df010313304bcebd96'
-            base: '7d364226b56e79aca7eb90bcf1288b805fd77349'
+            sha: '3e12185e3174cf4b762fab27a09c1e1361224856'
+            base: '6851b7c41b839d96cdb7d920309127405f2d49cd'
             command: 'node --test tests/atto-source-repository-parity-audit-v1.test.mjs tests/ci-recovery-evidence-20261121-v1.test.mjs tests/control-actor-memory-11-backend-audit-v1.test.mjs tests/control-ref32-bit-vectors-v1.test.mjs tests/exception-control-bang-source-audit-v1.test.mjs tests/git-replace-integrity-v1.test.mjs tests/std-protocol-11-backend-evidence-v1.test.mjs tests/std-udp-11-backend-evidence-v1.test.mjs'
           - pr: 117
-            sha: 'ba10cd097a5ce6cbabcd29d7f3fe7da4a29ebc1b'
-            base: '79a660f8c744cbd4b1b1547576813a373386de1d'
-            command: 'node --test tests/map-of-entries-nominal-struct-v1.test.mjs tests/contextual-collection-pair-entry-v1.test.mjs'
+            sha: 'eae707734d0b2acb05d7ddd1e70d45eb6fded0f6'
+            base: '938c69db9da154adb4e576f99722a91609673160'
+            command: 'node --test tests/map-of-entries-nominal-struct-v1.test.mjs tests/contextual-collection-pair-entry-v1.test.mjs tests/typed-map-of-entries-nominal-struct-v1.test.mjs'
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
