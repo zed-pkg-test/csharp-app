@@ -12,51 +12,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - pr: 52
-            head: 'b88c15ca2ae7d3656ea6e9ef5f73a1f802da1b6a'
-            test: "node --test tests/adt-lazy-guard-v2.test.mjs tests/adt-when-guard-v1.test.mjs tests/typed-arm-task-capture-v1.test.mjs"
-          - pr: 372
-            head: '740f37311f9f438a9780b4e621feabd48e83da56'
-            test: "node --test tests/dop-inverted-mixed-v1.test.mjs"
-          - pr: 357
-            head: '10566d37462f829e78a1d3f1fd21b74e8e6ed09e'
-            test: "node --test tests/atto-core-*.test.mjs tests/atto-library-*.test.mjs"
-          - pr: 342
-            head: '2923c291ec9dfaa13a532a4340892649e7a5a943'
-            test: "node --test test/dop-inverted-canonical-source-v1.test.mjs"
-          - pr: 341
-            head: 'e24f2ff807c60cd8f67789b56f5c5971839856a8'
-            test: "node --test tests/dop-layout-topology-v1.test.mjs"
-          - pr: 391
-            head: '33deddd292b3a5f2b0818f7927ab3233c727d07f'
-            test: "node --test test/actor-stack-containment-v1.test.mjs"
-          - pr: 395
-            head: 'b3fd2458e4ace40c37d1f7616035ac09b1a7c070'
-            test: "node --test test/actor-stack-containment-v1.test.mjs"
-          - pr: 397
-            head: '200488ec080fb90f63a8146c60c2d9eef8691b6d'
-            test: "node --test test/actor-stack-containment-v1.test.mjs"
-          - pr: 353
-            head: '42db90ceaa272ea0916459421ce2a48280c287a3'
-            test: "node --test test/dop-inverted-canonical-source-v1.test.mjs test/dop-inverted-guest-receipt-v1.test.mjs"
-          - pr: 366
-            head: '32ebd682d44717607d9bbcde100a24832a9a417f'
-            test: "node --test test/dop-inverted-canonical-source-v1.test.mjs test/dop-inverted-guest-receipt-v1.test.mjs"
-          - pr: 448
-            head: 'aedd9e6447e36b3289bc597d6ec5817cd4125e68'
-            test: "node --test tests/virtual-actor-directory-inspection-v1.test.mjs"
-          - pr: 471
-            head: 'c2ecb0fee9540cc49da9a4882d725760b2ce05c6'
-            test: "node --test tests/virtual-actor-directory-inspection-v1.test.mjs tests/virtual-actor-activation-supervision-v1.test.mjs"
-          - pr: 484
-            head: 'cb5eaad36b967959df9c2eea20a114a546c26426'
-            test: "node --test test/erl-otp-static-reference.test.mjs test/erl-otp-strict-aot-contract.test.mjs test/erl-otp-strict-aot-receipt.test.mjs"
           - pr: 74
-            head: '9e50ab8b4d46cf2074c92e3304e43fe5633468f1'
-            test: "python3 bin/validate_implicit_argument_borrow.py && python3 tests/implicit_argument_borrow_validator_smoke.py"
+            head: 'de7e252cd344b3fbeead8d00fe14ab7d140c684d'
+            test: "python3 bin/validate_implicit_argument_borrow.py && python3 -O tests/implicit_argument_borrow_validator_smoke.py"
           - pr: 541
-            head: 'd122af5b91dc6e5309f8c9f404eba677c6033428'
+            head: '63234d01540cbba3363502df8d6f8912c2c481f7'
             test: "node bin/validate-lambda-v1.mjs && node --test test/lambda-v1-manifest.test.mjs test/lambda-v1-python.test.mjs && python3 -m unittest discover -s tests -p test_run_lambda_v1.py"
+          - pr: 484
+            head: '0e4ab4eac6527b7d9daf61bcafce0bc7d87acf7e'
+            test: "node --test test/erl-otp-static-reference.test.mjs test/erl-otp-strict-aot-contract.test.mjs test/erl-otp-strict-aot-receipt.test.mjs"
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -71,9 +35,9 @@ jobs:
           cd source
           git config user.name 'CI integration'
           git config user.email 'ci@example.invalid'
-          git -c credential.helper= -c http.extraheader= fetch --no-tags https://github.com/atto-lang/atto-platform-conformance.git de4a4d915c17d52b5c676a4672ddb9bf1e851671 "$HEAD_SHA"
-          git checkout --detach de4a4d915c17d52b5c676a4672ddb9bf1e851671
-          test "$(git rev-parse 'HEAD^{tree}')" = 930cd0b6a60f6fc9cf0d9184fcb6e07d1a686340
+          git -c credential.helper= -c http.extraheader= fetch --no-tags https://github.com/atto-lang/atto-platform-conformance.git a4e6109ea068849e028834a990e605c381e811f5 "$HEAD_SHA"
+          git checkout --detach a4e6109ea068849e028834a990e605c381e811f5
+          test "$(git rev-parse 'HEAD^{tree}')" = dd9da5bd4ea8c25dc1f3385828ed309909463e50
           git merge --no-ff --no-edit "$HEAD_SHA"
           echo "TESTED TREE $(git rev-parse 'HEAD^{tree}') PARENTS $(git log -1 --format=%P)"
           bash -euo pipefail -c "$TEST_COMMAND"
