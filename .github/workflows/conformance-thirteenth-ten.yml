@@ -1,44 +1,49 @@
-name: Thirteenth batch pinned public integrations
+name: Landed thirteenth batch cumulative regression
 on:
   push:
     branches: ['ci/conformance-thirteenth-ten-20261125']
 permissions: {}
 jobs:
   verify:
-    name: PR ${{ matrix.pr }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - pr: 97
-            head: '601795d5c9d091ba241f653ec2fde43403df68a9'
-            test: 'node --test tests/specification-formatter-conformance-v1.test.mjs'
-            repo: 'atto-lang/atto-platform-conformance'
-            base: '7b8a61e34301062436e47bcabd6a4c1a16279b04'
-            tree: '018599c1a439e86d3610258dc95c30fe67c03999'
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
-      - name: Test pinned public integration
-        env:
-          SOURCE_REPO: ${{ matrix.repo }}
-          BASE_SHA: ${{ matrix.base }}
-          BASE_TREE: ${{ matrix.tree }}
-          HEAD_SHA: ${{ matrix.head }}
-          TEST_COMMAND: ${{ matrix.test }}
+      - name: Verify exact landed merge and run cumulative contracts
         run: |
           set -euo pipefail
           git init source
           cd source
-          git config user.name 'CI integration'
-          git config user.email 'ci@example.invalid'
-          git -c credential.helper= -c http.extraheader= fetch --no-tags https://github.com/$SOURCE_REPO.git "$BASE_SHA" "$HEAD_SHA"
-          git checkout --detach "$BASE_SHA"
-          test "$(git rev-parse 'HEAD^{tree}')" = "$BASE_TREE"
-          git merge --no-ff --no-edit "$HEAD_SHA"
-          echo "TESTED TREE $(git rev-parse 'HEAD^{tree}') PARENTS $(git log -1 --format=%P)"
-          bash -euo pipefail -c "$TEST_COMMAND"
+          git -c credential.helper= -c http.extraheader= fetch --depth=1 https://github.com/atto-lang/atto-platform-conformance.git 2aec98e9c0f4b3b09cdca9cbc35e92a05dc76127
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = 2aec98e9c0f4b3b09cdca9cbc35e92a05dc76127
+          test "$(git rev-parse 'HEAD^{tree}')" = 805fc18c4d9a5c8e0acc721fa95621e53d64ebc7
+          node bin/check-actor-external-entrypoints-v1.mjs
+          python3 -m unittest discover -s tests -p 'test_hosted_*parity_v1.py'
+          python3 -m unittest discover -s tests -p test_core_ownership_borrow_parity_v1.py
+          python3 -m unittest discover -s tests -p test_hosted_fs_file_port_v1.py
+          python3 -m unittest discover -s tests -p 'test_actor_scheduler_*v1.py'
+          rustc --edition=2021 --test tests/actor_elastic_parity_v1.rs -o /tmp/actor-elastic-tests
+          /tmp/actor-elastic-tests
+          cargo test --manifest-path test/rust-source-admission/Cargo.toml
+          python3 -m unittest discover -s tests -p test_ffi_boundary_v1.py
+          python3 -m unittest discover -s tests -p test_copy_modes_v2.py
+          python3 -m unittest discover -s tests -p test_return_type_inference_contract.py
+          python3 -m unittest discover -s tests -p test_typeof_spelling_contract.py
+          python3 -m unittest discover -s tests -p test_actor_persistence_contract.py
+          for f in tests/io_detached_oracle.rs tests/io_direction_oracle.rs tests/io_effect_oracle.rs tests/stdio_unbounded_oracle.rs; do rustc --edition=2021 --test "$f" -o /tmp/io-tests && /tmp/io-tests || exit 1; done
+          python3 -m unittest discover -s tests -p 'test_net_http*_source.py'
+          rustc --edition=2021 --test tests/pointer_local_lease_oracle_v1.rs -o /tmp/pointer-tests
+          /tmp/pointer-tests
+          for f in tools/typed_actor_fixture_identity.rs tools/typed_actor_backend_inventory.rs tools/typed_actor_v1.rs tools/typed_actor_control_boundary_v1.rs tools/typed_actor_string_targets.rs tools/typed_actor_bool_v1.rs tools/actor_isolation_types_v1.rs tools/actor_isolation_broker_v1.rs; do rustc --edition=2021 --test "$f" -o /tmp/typed-tests && /tmp/typed-tests || exit 1; done
+          node formal/fleet/check_coverage.cjs
+          rustc --edition=2021 -D warnings tools/actor_aot_guest_gate.rs -o /tmp/actor-gate
+          if /tmp/actor-gate; then exit 1; fi
+          python3 bin/validate_implicit_argument_borrow.py
+          python3 -O tests/implicit_argument_borrow_validator_smoke.py
+          node bin/validate-lambda-v1.mjs
+          python3 -m unittest discover -s tests -p test_run_lambda_v1.py
+          node --test tests/dop-inverted-mixed-v1.test.mjs tests/dop-layout-topology-v1.test.mjs test/dop-inverted-canonical-source-v1.test.mjs test/dop-inverted-guest-receipt-v1.test.mjs test/lambda-v1-manifest.test.mjs test/lambda-v1-python.test.mjs test/erl-otp-static-reference.test.mjs test/erl-otp-strict-aot-contract.test.mjs test/erl-otp-strict-aot-receipt.test.mjs tests/value-pipe-tuples-v1-admission-hardening.test.mjs tests/value-pipe-tuples-v1.test.mjs tests/specification-formatter-conformance-v1.test.mjs tests/actor-counter-parity.test.mjs test/dop-layout-physical-certifier-snapshot.test.mjs test/dop-layout-physical-metamorphic.test.mjs test/dop-layout-canonical-geometry.test.mjs test/dop-i64-shared-source-envelope-v1.test.mjs tests/annotation-compiler-corpus-v2.test.mjs tests/annotation-targets-v2.test.mjs test/dop-four-layout-state-replay.test.mjs test/dop-layout-physical-certifier-v1.test.mjs tests/untrusted-jit-evidence-v1.test.mjs tests/pointer_local_candidates_v1.test.mjs tests/pointer_ref_local_v1.test.mjs tests/pointer_source_traits_operators_v1.test.mjs tests/mcp-m0-*.test.mjs test/source-platform-governance.test.mjs tests/audit-coverage-receipt-v1.test.mjs tests/merge-wave-live-evidence-v1.test.mjs test/data-layout-descriptor-snapshot.test.mjs tests/aot-artifact-v2.test.mjs tests/aot-v2-golden-vector.test.mjs tests/aot-v2-schema-drift.test.mjs tests/merge-wave-qualifier.test.mjs tests/audit-checkpoint-sequence-v1.test.mjs tests/audit-actor-ci-evidence.test.mjs tests/wave-two-postmerge-intake-20261106.test.mjs tests/entry-map-upsert-v1.test.mjs tests/map-entry-contract-v1.test.mjs tests/map-mutation-v1.test.mjs tests/full_aot_executable_gates.test.mjs tests/record-static-bracket-write-v1.test.mjs tests/actor-persistence-wire.test.mjs tests/actor-event-sourcing-contract.test.mjs tests/durable-typed-protocols-contract.test.mjs tests/durable-typed-scalar-wire-reference.test.mjs tests/task-backend-parity-rollout-v1.test.mjs tests/task-cancel-lock-lifecycle-v1.test.mjs tests/task-compiler-parity-admission-v1.test.mjs tests/task-compiler-rust-execution-receipt.test.mjs tests/task-payload-sync-v1.test.mjs tests/atto-canonical-syntax-v1.test.mjs tests/atto-source-toolchain-parity-v2.test.mjs tests/adt_guard_parity.test.mjs tests/async_interop_contract.test.mjs tests/lambda_four_styles.test.mjs tests/sequence-pattern-v2-registry.test.mjs tests/typed-pattern-fragments-v1-registry.test.mjs tests/type-tests-contract.test.mjs tests/inverted-packed-alignment-20261106.test.mjs tests/inverted-reentrancy-20261106.test.mjs tests/layout-oracle.test.mjs tests/native_option_source_cases.mjs tests/trap_result_reference.mjs tests/trap_result_source_cases.mjs tests/extensible-declarations-static-imports.test.mjs tests/atto-gpu-saxpy-g2.test.mjs test/data-layout-descriptor-snapshot.test.mjs test/dop-four-layout-reentrant-admission.test.mjs test/dop-layout-security-integration.test.mjs tests/dop-evidence-file-v1.test.mjs tests/dop-execution-integration-v1.test.mjs tests/dop-execution-profile-v1.test.mjs tests/dop-github-api-v1.test.mjs tests/dop-github-run-snapshot-v1.test.mjs tests/dop-scalar-guest-v1.test.mjs tests/dop-workflow-identity-v1.test.mjs tests/dop-workflow-source-v1.test.mjs tests/dop-physical-layout-v1.test.mjs tests/concurrency-trace-admission-v1.test.mjs tests/mailbox-completion-bounded-interleavings-v1.test.mjs tests/mailbox-completion-v1.test.mjs tests/annotation-targets-v2.test.mjs tests/automatic-prelude-contract.test.mjs tests/option-result-trap-fixture-integrity.test.mjs tests/option-result-trap-receipt.test.mjs tests/option-result-trap-v2-integrity.test.mjs tests/option-result-trap-v3-integrity.test.mjs tests/tail-calls-v1-source-contract.test.mjs tests/actor-execution-classes-v1.test.mjs tests/actor-scheduling-policy-v1.test.mjs tests/tenant-socket-isolation-v1.test.mjs tests/explicit-return-flow-v1.test.mjs test/source-input-admission-v1.test.mjs tests/actor-supervisor-region-v1.test.mjs tests/scoped-local-evidence.test.mjs tests/scoped-local-github.test.mjs tests/thread-task-actor-local-v1.test.mjs tests/merge-coordination-v1.test.mjs tests/merge-coordination-own-data-20261108.test.mjs tests/cooperation-128-regressions-20261109.test.mjs tests/cooperative-execution.test.mjs tests/cooperative-execution-hardening.test.mjs tests/actor-heap-hole-reuse-v1.test.mjs tests/actor-heap-physical-growth-peak-v1.test.mjs tests/hybrid-actor-memory-source-fixture-v1.test.mjs tests/hybrid-actor-memory-v1.test.mjs tests/hybrid-memory-host-evidence-20261121.test.mjs tests/semantic-reconciliation-20261120.test.mjs tests/enum-semantics-v1-mutations.test.mjs tests/enum-semantics-v1.test.mjs tests/enum-semantics-v2-six-backend.test.mjs tests/logical-borrow-compiler-v1.test.mjs tests/logical-borrow-critical-oracle.test.mjs tests/safe-collection-access-v1.test.mjs tests/safe-collection-contract-v1.test.mjs tests/safe-collection-source-repo-matrix-v1.test.mjs test/actor-stack-containment-v1.test.mjs tests/actor-heap-ref32-growth-v1.test.mjs tests/random-five-*.test.mjs tests/borrow-check-unification-v1.test.mjs tests/actor-base-lifecycle-v2.test.mjs tests/governed-instrumentation-v1.test.mjs tests/tenant-isolation-v2.test.mjs tests/tenant-memory-access-v1.test.mjs tests/confidential-compute-contract.test.mjs tests/sev-snp-report-contract.test.mjs tests/sev-snp-vcek-endorsement-contract.test.mjs tests/native-wasm-data-v0-vectors.test.mjs test/static-dispatch-aot-parity-v1.test.mjs tests/guard-v1-proof.test.mjs tests/atto-canonical-syntax-v1.test.mjs tests/multi-actor-shared-region-v1.test.mjs tests/task-cancel-local-trace-v1.test.mjs tests/tenant-vm-actor-containment-v1.test.mjs test/namespace-actor-state-v1.test.mjs tests/adt-nominal-ownership-v1.test.mjs tests/functor-adt-v1-corpus.test.mjs tests/actor-ref32-five-backend-v1.test.mjs tests/actor-zero-gc-execution-v2.test.mjs tests/with-ownership-contract-v1.test.mjs tests/match-return-forms-v1.test.mjs tests/typed-match-arm-v1.test.mjs tests/source-unicode-control-v1.test.mjs tests/tenant-vm-api-parity-v1.test.mjs tests/actor-ready-pipe-lifecycle-v1.test.mjs tests/pipeline-stop-bang-alias-contract.test.mjs tests/match-on-result-arms-v1.test.mjs tests/core-option-borrow-parity-v1.test.mjs tests/core-option-borrow-source-ledger-v1.test.mjs tests/core-option-parity-dashboard-v1.test.mjs tests/eleven-backend-parity-v1.test.mjs tests/pipe-rpipe-directed-contract.test.mjs tests/atto-library-profiles-v1.test.mjs tests/atto-library-run-evidence-v1.test.mjs tests/std-actor-guest-candidate-v1.test.mjs tests/std-actor-parity-v1.test.mjs tests/lambda_mandatory_pipes_v1.test.mjs tests/lambda_pipe_execution_matrix_v1.test.mjs tests/value-block-range-v0-evidence.test.mjs tests/atto-theater-v1.test.mjs test/async-await-task-timers-v1.test.mjs test/std-time-parity-v1.test.mjs test/task-timer-hard-rt-v1.test.mjs tests/maybe-result-defer-v1.test.mjs
           git diff --exit-code HEAD --
